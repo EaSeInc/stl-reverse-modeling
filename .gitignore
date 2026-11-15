@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# артефакты прогонов
+*.log
+fit*.csv
+fit*.json
+fit_synth_gate.csv
+fit_synth_gate.json
+*.png
+*.3mf
+*.gcode
+*.step
+*.truthbak
+*.bak
+
+# секреты
+.env
+*.env

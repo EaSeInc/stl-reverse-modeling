@@ -1,0 +1,10 @@
+# проверено на этих версиях (Python 3.12)
+cadquery==2.8.0
+trimesh==5.2.1
+numpy==2.5.4
+scipy==1.18.1
+shapely>=2.0
+networkx>=3.0
+rtree>=1.2
+matplotlib>=3.8
+pyransac3d>=0.6
