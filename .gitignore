@@ -16,6 +16,9 @@ fit_synth_gate.json
 *.truthbak
 *.bak
 
+# картинки для документации (при общем запрете *.png выше)
+!docs/*.png
+
 # секреты
 .env
 *.env
