@@ -30,3 +30,6 @@ viewer/.browser-profile/
 
 # отчёты прогонов
 out/
+
+# лог фонового сервера
+logs/
