@@ -108,8 +108,10 @@ button { cursor: pointer; }
 /* сайдбар */
 #side {
   width: var(--side); flex: none; display: flex; flex-direction: column; min-height: 0;
-  background: var(--s1); border-right: 1px solid var(--line);
+  background: var(--s1); border-right: 1px solid var(--line); overflow-y: auto;
 }
+#side .panel { flex: 0 0 auto; }
+#side .panel > .list { flex: 1 1 auto; max-height: 46vh; }
 .panel { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
 .side-hd {
   display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; flex: none;
@@ -281,3 +283,15 @@ button { cursor: pointer; }
   .top .pill { display: none; }
   .btn span.kbd { display: none; }
 }
+
+/* сегменты, ползунки, выбор оси */
+.seg { display: flex; border: 1px solid var(--line2); border-radius: var(--r); overflow: hidden; }
+.seg button {
+  flex: 1 1 0; height: 26px; border: 0; background: transparent; color: var(--tx3);
+  font-family: PlexMono, monospace; font-size: 11px;
+}
+.seg button + button { border-left: 1px solid var(--line2); }
+.seg button:hover { background: var(--s3); color: var(--tx); }
+.seg button.on { background: var(--s3); color: var(--acc); }
+.rng { width: 100%; accent-color: var(--acc); height: 18px; margin: 1px 0 0; }
+.tool[disabled] { opacity: .4; cursor: default; }
