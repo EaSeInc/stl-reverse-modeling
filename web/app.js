@@ -53,10 +53,11 @@ const MODEL_COLOR = new THREE.Color(0xc9d3e2);
 const state = {
   model: null,          // {path, geo, mesh, bbox}
   ref: null,
-  mode: 'orbit',        // orbit | measure | pin
+  mode: 'orbit',        // orbit | measure | pin | draw | move
   pending: null,        // первая точка замера
   measures: [],
   pins: [],
+  strokes: [],
   compare: null,
   scaleMax: 1,
   saved: false,
@@ -66,7 +67,7 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 
 /* ------------------------------------------------------------------ панели */
-const PANELS = ['files', 'params', 'measure', 'notes', 'compare', 'help'];
+const PANELS = ['tasks', 'params', 'measure', 'notes', 'compare', 'help'];
 function activate(name) {
   const app = $('app');
   app.classList.remove('no-side');            // панель снова нужна
@@ -120,16 +121,68 @@ function bboxOf(geo) {
 
 async function loadFile(path, role) {
   const t0 = performance.now();
+  hint('открываю ' + path.split(/[\\/]/).pop() + '…');
   const res = await fetch('/api/mesh?path=' + encodeURIComponent(path));
   if (!res.ok) { hint('не смог загрузить: ' + (await res.text())); return; }
   const buf = await res.arrayBuffer();
   const geo = loader.parse(buf);
   geo.computeVertexNormals();
   setSlot(role, path, geo);
-  refreshFiles();
-  buildPill();
   $('build-time').textContent = ((performance.now() - t0) / 1000).toFixed(1) + ' с';
   updateTitle();
+  if (role === 'model') {
+    animatePill('Разбираю');
+    analyze(path);                 // п.5: разбор сетки стартует сам, кнопку жать не надо
+  }
+}
+
+/* разбор сетки: тела, watertight, объём — после загрузки, без спроса */
+let analyzeSeq = 0;
+async function analyze(path) {
+  const seq = ++analyzeSeq;
+  const t0 = performance.now();
+  $('analyze-out').textContent = 'разбираю сетку…';
+  let data;
+  try {
+    const res = await fetch('/api/analyze?path=' + encodeURIComponent(path));
+    data = await res.json();
+  } catch (e) {
+    $('analyze-out').textContent = 'разбор не вышел: ' + e.message;
+    pillDone('Разбор не вышел', '');
+    return;
+  }
+  if (seq !== analyzeSeq) return;                 // пока считали, открыли другой файл
+  if (data.error) { $('analyze-out').textContent = 'разбор: ' + data.error; pillDone('Разбор не вышел', ''); return; }
+  state.analyze = data;
+  const sec = ((performance.now() - t0) / 1000).toFixed(1);
+  const tris = Number(data.triangles || 0);
+  const bodies = Number(data.bodies || 0);
+  const vol = data.volume != null ? fmt(data.volume) + ' мм³' : '—';
+  $('analyze-out').innerHTML =
+    `сетка <b>${tris.toLocaleString('ru-RU')}</b> граней
+` +
+    `тел ${bodies} · ${data.watertight ? 'замкнутая' : 'с дырами'}
+` +
+    `объём ${vol} · площадь ${data.area != null ? fmt(data.area) + ' мм²' : '—'}
+` +
+    `<span class="sub">разбор ${sec} с${data.cached ? ' (из кеша)' : ''}</span>`;
+  pillDone('Прочитано', tris.toLocaleString('ru-RU') + ' граней');
+  $('st-tris').textContent = 'сетка ' + tris.toLocaleString('ru-RU') + ' · тел ' + bodies;
+  $('explode-cap').textContent = bodies > 1
+    ? `тел в файле ${bodies} — разносит их вдоль оси, видно, что с чем сходится`
+    : 'тело одно — разносить нечего; зато срез и замеры работают';
+  updateLayers();
+}
+
+function animatePill(text) {
+  $('build-dot').className = 'dot warn';
+  $('build-state').textContent = text;
+  $('build-info').textContent = '…';
+}
+function pillDone(text, info) {
+  $('build-dot').className = 'dot ok';
+  $('build-state').textContent = text;
+  if (info) $('build-info').textContent = info;
 }
 
 function updateTitle() {
@@ -141,14 +194,15 @@ function updateTitle() {
 
 function setSlot(role, path, geo) {
   dropSlot(role);
-  if (role === 'model') {          // новая модель — старые замеры к ней не относятся
-    if (state.measures.length || state.pins.length) {
-      state.measures = []; state.pins = [];
-      rebuildMeasureLines(); renderMeasures(); rebuildPinDots(); renderPins();
-      hint('новая модель — замеры и замечания очищены');
+  const isModel = role === 'model';
+  if (isModel) {
+    // новая модель — старые замеры и рисунок к ней не относятся
+    if (state.measures.length || state.pins.length || state.strokes.length) {
+      state.measures = []; state.pins = []; state.strokes = [];
+      rebuildMeasureLines(); renderMeasures(); rebuildPinDots(); renderPins(); rebuildStrokes(); renderStrokes();
+      hint('новая модель — замеры, замечания и рисунок очищены');
     }
   }
-  const isModel = role === 'model';
   const mat = isModel
     ? new THREE.MeshStandardMaterial({ color: MODEL_COLOR.clone(), metalness: 0.15, roughness: 0.52,
         flatShading: false, vertexColors: false, wireframe: $('chk-wire').checked, side: THREE.DoubleSide })
@@ -158,7 +212,7 @@ function setSlot(role, path, geo) {
   const mesh = new THREE.Mesh(geo, mat);
   mesh.userData.role = role;
   scene.add(mesh);
-  const info = { path, geo, mesh, ...bboxOf(geo) };
+  const info = { path, geo, mesh, mat, parts: null, ...bboxOf(geo) };
   state[role] = info;
   if (isModel) { $('chk-ghost').checked = true; }
   fitCamera();
@@ -178,7 +232,12 @@ function saved(v) {
 function dropSlot(role) {
   if (role === 'ref' && gizmoOn()) gizmo.detach();
   const cur = state[role];
-  if (cur) { scene.remove(cur.mesh); cur.geo.dispose(); cur.mesh.material.dispose(); }
+  if (cur) {
+    scene.remove(cur.mesh);
+    cur.geo.dispose();
+    cur.mat.dispose();
+    dropParts(role);
+  }
   state[role] = null;
   state.compare = null;
   $('compare-box').classList.add('hidden');
@@ -193,6 +252,7 @@ function fitCamera() {
   const d = r * 2.1;
   controls.target.copy(t.center);
   camera.position.set(t.center.x + d * 0.62, t.center.y - d * 0.72, t.center.z + d * 0.55);
+  camera.fov = 45;
   camera.near = Math.max(r / 400, 0.01);
   camera.far = r * 60;
   camera.updateProjectionMatrix();
@@ -214,9 +274,18 @@ function setView(kind) {
     left:   [c.x - r,       c.y,            c.z],
   }[kind];
   if (!pos) return;
-  camera.position.set(pos[0], pos[1], pos[2]);
+  // по грани — «телеобъектив»: перспектива почти не искажает, грань смотрит прямо
+  const narrow = kind !== 'iso';
+  camera.fov = narrow ? 12 : 45;
+  const k = narrow ? 3.9 : 1;
+  const p2 = new THREE.Vector3(pos[0], pos[1], pos[2]).sub(c).multiplyScalar(k).add(c);
+  camera.position.copy(p2);
+  camera.near = Math.max(r / 400, 0.01);
+  camera.far = r * 60 * k;
+  camera.updateProjectionMatrix();
   controls.target.copy(c);
   controls.update();
+  if (vcBox) vcSync();
 }
 document.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => setView(b.dataset.view); });
 $('btn-fit').onclick = () => fitCamera();
@@ -224,73 +293,113 @@ $('btn-fit').onclick = () => fitCamera();
 /* ------------------------------------------------------------------ пилюля и заголовки */
 function buildPill() {
   const m = state.model, r = state.ref;
-  const tris = m ? Math.round(m.geo.attributes.position.count / 3) : 0;
-  $('build-dot').className = 'dot ' + (m ? 'ok' : '');
-  $('build-state').textContent = m ? 'Готово' : 'Пусто';
-  $('build-info').textContent = m ? tris.toLocaleString('ru-RU') + ' граней' : '—';
-  const parts = [m, r].filter(Boolean).length;
-  $('st-dot').className = 'dot ' + (m ? 'ok' : 'warn');
-  if (parts) $('st-bbox').textContent = 'сеток ' + parts;
+  if (!m) {
+    $('build-dot').className = 'dot';
+    $('build-state').textContent = 'Пусто';
+    $('build-info').textContent = '—';
+    $('st-dot').className = 'dot warn';
+    $('st-tris').textContent = 'сетка —';
+    return;
+  }
+  const tris = Math.round(m.geo.attributes.position.count / 3);
+  $('build-dot').className = 'dot ok';
+  $('build-state').textContent = state.analyze ? 'Прочитано' : 'Загружено';
+  $('build-info').textContent = tris.toLocaleString('ru-RU') + ' граней';
+  $('st-dot').className = 'dot ok';
+  $('st-tris').textContent = 'сетка ' + tris.toLocaleString('ru-RU') +
+    (state.analyze ? ' · тел ' + state.analyze.bodies : '');
 }
 
 function docName() {
   const m = state.model || state.ref;
-  const name = m ? m.path.split('/').pop() : 'ничего не открыто';
+  const name = m ? m.path.split(/[\\/]/).pop() : 'ничего не открыто';
   $('docname-text').textContent = name;
   $('docname-text').title = m ? m.path : '';
   $('crumb-name').textContent = name;
 }
 
-/* ------------------------------------------------------------------ список файлов */
-let fileCache = [];
+/* ------------------------------------------------------------------ задачи */
+let taskCache = [];
 
-async function refreshFiles() {
-  const res = await fetch('/api/files');
-  const { files } = await res.json();
-  fileCache = files;
-  const box = $('file-list');
-  box.innerHTML = '';
-  $('files-count').textContent = files.length ? String(files.length) : '0';
-  if (!files.length) {
-    box.innerHTML = '<div class="empty">тут нет STL — перетащи файл</div>';
+async function refreshTasks() {
+  const box = $('task-list');
+  let tasks = [];
+  try {
+    const res = await fetch('/api/tasks');
+    const data = await res.json();
+    tasks = data.tasks || [];
+  } catch (e) {
+    box.innerHTML = '<div class="empty">список задач недоступен: ' + e.message + '</div>';
+    $('tasks-count').textContent = '—';
     return;
   }
-  for (const f of files.slice(0, 400)) {
+  taskCache = tasks;
+  box.innerHTML = '';
+  $('tasks-count').textContent = tasks.length ? String(tasks.length) : '0';
+  if (!tasks.length) {
+    box.innerHTML = '<div class="empty">ещё ни одной задачи. Собери замеры и замечания, напиши что поправить — и «Запустить исправление».</div>';
+    return;
+  }
+  for (const t of tasks.slice(0, 60)) {
     const row = document.createElement('div');
-    row.className = 'file';
-    if (state.model && state.model.path === f.path) row.classList.add('loaded-model');
-    if (state.ref && state.ref.path === f.path) row.classList.add('loaded-ref');
-    const name = document.createElement('span');
-    name.className = 'name';
-    name.textContent = f.rel;
-    name.title = f.path;
-    const size = document.createElement('span');
-    size.className = 'size';
-    size.textContent = (f.size / 1024).toFixed(0) + 'K';
-    const bModel = document.createElement('button');
-    bModel.textContent = 'моя';
-    bModel.title = 'загрузить как мою модель';
-    bModel.onclick = () => loadFile(f.path, 'model');
-    const bRef = document.createElement('button');
-    bRef.textContent = 'эталон';
-    bRef.title = 'загрузить как эталон';
-    bRef.onclick = () => loadFile(f.path, 'ref');
-    row.append(name, size, bModel, bRef);
+    row.className = 'trow' + (state.taskId === t.id ? ' on' : '');
+    row.title = t.note || t.id;
+    const st = t.status || 'draft';
+    row.innerHTML = `<div class="l1"><span class="id">${t.id || t.file}</span>` +
+      `<span class="st ${st}">${st === 'queued' ? 'в очереди' : 'черновик'}</span></div>` +
+      `<div class="l2">${t.model ? t.model.split(/[\\/]/).pop() : 'без файла'}` +
+      `${(t.measures || t.pins || t.strokes) ? ' · замеров ' + (t.measures || 0) + ', замеч. ' + (t.pins || 0) + ', штрихов ' + (t.strokes || 0) : ''}</div>`;
+    row.onclick = () => loadTask(t.file || t.id);
     box.append(row);
   }
 }
-$('files-refresh').onclick = refreshFiles;
+
+/* вернуться к сохранённой задаче: файл, замеры, замечания, рисунок, вид */
+async function loadTask(file) {
+  hint('открываю задачу ' + file + '…');
+  const res = await fetch('/api/task?file=' + encodeURIComponent(file));
+  const data = await res.json();
+  if (data.error) { hint('задача не открылась: ' + data.error); return; }
+  const task = data.task || {};
+  state.taskId = task.id || file.replace(/\.json$/, '');
+
+  if (task.model && task.model.path && (!state.model || state.model.path !== task.model.path)) {
+    await loadFile(task.model.path, 'model');
+  }
+  if (task.ref && task.ref.path && (!state.ref || state.ref.path !== task.ref.path)) {
+    await loadFile(task.ref.path, 'ref');
+  }
+  state.measures = (task.measurements || []).map((m) => ({ a: m.a, b: m.b }));
+  state.pins = (task.pins || []).map((p) => ({ id: p.id, point: p.point, normal: p.normal || [0, 0, 1],
+    comment: p.comment || '', camera: p.camera || { pos: camera.position.toArray(), target: controls.target.toArray() } }));
+  state.strokes = (task.strokes || []).map((s) => ({ points: s.points || [] }));
+  rebuildMeasureLines(); renderMeasures();
+  rebuildPinDots(); renderPins();
+  rebuildStrokes(); renderStrokes();
+  if (task.note) $('task-note').value = task.note;
+  if (task.refRot && state.ref) { state.ref.mesh.rotation.fromArray(task.refRot); updatePose(); }
+  if (task.pose && state.ref && task.pose.shift) { state.ref.mesh.position.fromArray(task.pose.shift); updatePose(); }
+  if (task.view && task.view.camera) {
+    camera.position.fromArray(task.view.camera);
+    controls.target.fromArray(task.view.target || controls.target.toArray());
+    controls.update();
+  }
+  if (task.explode) setExplodeAxis(task.explode.axis || 'x');
+  saved(true);
+  $('task-out').innerHTML = `открыта задача <b>${state.taskId}</b>`;
+  hint('задача открыта: ' + state.taskId);
+  await refreshTasks();
+}
+$('tasks-refresh').onclick = refreshTasks;
 
 function updateLayers() {
-  const set = (role, id) => {
-    const el = $(id);
+  const size = (role) => {
     const info = state[role];
-    el.querySelector('.lsize').textContent = info
-      ? `${fmt(info.size.x)} × ${fmt(info.size.y)} × ${fmt(info.size.z)}`
-      : '—';
+    return info ? `${fmt(info.size.x)} × ${fmt(info.size.y)} × ${fmt(info.size.z)}` : '—';
   };
-  set('model', 'layer-model');
-  set('ref', 'layer-ref');
+  $('layer-model').textContent = size('model');
+  $('layer-ref').textContent = size('ref');
+  $('layer-strokes').textContent = state.strokes.length ? String(state.strokes.length) : '—';
 
   const b = $('bbox');
   const t = state.model || state.ref;
@@ -306,10 +415,15 @@ let downPos = null;
 
 canvas.addEventListener('pointerdown', (e) => {
   downPos = [e.clientX, e.clientY];
+  if (state.mode === 'draw') { strokeStart(e); return; }
   if (state.mode === 'move' && !gizmoOn()) dragStart(e);
 });
-canvas.addEventListener('pointermove', (e) => { if (drag) dragMove(e); });
+canvas.addEventListener('pointermove', (e) => {
+  if (drawing) { strokePoint(e); return; }
+  if (drag) dragMove(e);
+});
 canvas.addEventListener('pointerup', (e) => {
+  if (drawing) { strokeEnd(); downPos = null; return; }
   if (drag) { dragEnd(); downPos = null; return; }
   if (!downPos) return;
   const moved = Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]);
@@ -319,6 +433,11 @@ canvas.addEventListener('pointerup', (e) => {
   if (!hit) { if (state.mode !== 'orbit') hint('мимо — кликни по самой детали'); return; }
   if (state.mode === 'measure') addMeasurePoint(hit);
   if (state.mode === 'pin') addPin(hit);
+  if (state.mode === 'draw') {                 // одиночный клик — тоже штрих из одной точки
+    pushUndo();
+    state.strokes.push({ points: [hit.point.toArray().map((v) => +v.toFixed(3))] });
+    rebuildStrokes(); renderStrokes(); updateLayers();
+  }
 });
 
 function pick(e) {
@@ -326,11 +445,19 @@ function pick(e) {
   pointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
   pointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  const targets = [state.model, state.ref].filter(Boolean).map((s) => s.mesh);
+  const targets = [];
+  for (const s of [state.model, state.ref]) {
+    if (!s) continue;
+    // после «разнести → вернуть» части остаются в памяти, но скрыты: тогда цель — целая сетка
+    if (s.parts && s.parts.some((q) => q.mesh.visible)) {
+      targets.push(...s.parts.filter((q) => q.mesh.visible).map((q) => q.mesh));
+    } else if (s.mesh.visible) targets.push(s.mesh);
+  }
   const hits = raycaster.intersectObjects(targets, false);
   if (!hits.length) return null;
   const h = hits[0];
-  return { point: h.point.clone(), normal: h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : new THREE.Vector3(0, 0, 1),
+  return { point: h.point.clone(),
+           normal: h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : new THREE.Vector3(0, 0, 1),
            role: h.object.userData.role };
 }
 
@@ -514,7 +641,8 @@ function ramp(t) {
 }
 
 async function compareWithRef() {
-  if (!state.model || !state.ref) { hint('нужны обе сетки: моя и эталон'); activate('files'); return; }
+  if (!state.model || !state.ref) { hint('сравнивать пока не с чем — работает и один файл'); activate('tasks'); return; }
+  setExplode(0);
   hint('считаю расстояния…');
   $('st-dot').className = 'dot warn';
   const body = new URLSearchParams({ mine: state.model.path, ref: state.ref.path });
@@ -541,9 +669,9 @@ async function compareWithRef() {
     colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
   }
   state.model.geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  state.model.mesh.material.vertexColors = true;
-  state.model.mesh.material.color.set(0xffffff);
-  state.model.mesh.material.needsUpdate = true;
+  state.model.mat.vertexColors = true;
+  state.model.mat.color.set(0xffffff);
+  state.model.mat.needsUpdate = true;
 
   const st = data.stats;
   state.compare = { rms: st.rms, mean: st.mean, p95: st.p95, max: st.max, n: data.n };
@@ -571,9 +699,9 @@ async function compareWithRef() {
 function clearCompare() {
   if (!state.model) return;
   state.model.geo.deleteAttribute('color');
-  state.model.mesh.material.vertexColors = false;
-  state.model.mesh.material.color.copy(MODEL_COLOR);
-  state.model.mesh.material.needsUpdate = true;
+  state.model.mat.vertexColors = false;
+  state.model.mat.color.copy(MODEL_COLOR);
+  state.model.mat.needsUpdate = true;
   state.compare = null;
   $('compare-box').classList.add('hidden');
   $('compare-empty').hidden = false;
@@ -581,18 +709,22 @@ function clearCompare() {
   hint('раскраска убрана');
 }
 
-/* ------------------------------------------------------------------ задача агенту */
-async function saveTask() {
+/* ------------------------------------------------------------------ задача и очередь */
+async function saveTask(opts = {}) {
+  const requestFix = !!opts.request_fix;
   const t = state.model || state.ref;
+  if (!t) { hint('сначала открой STL'); return; }
   const payload = {
     kind: 'viewer-task',
+    request_fix: requestFix,
     model: state.model ? { path: state.model.path,
       bbox: [state.model.size.x, state.model.size.y, state.model.size.z].map((v) => +v.toFixed(3)) } : null,
     ref: state.ref ? { path: state.ref.path,
       bbox: [state.ref.size.x, state.ref.size.y, state.ref.size.z].map((v) => +v.toFixed(3)) } : null,
-    bbox: t ? { size: [t.size.x, t.size.y, t.size.z].map((v) => +v.toFixed(3)),
-                min: t.box.min.toArray().map((v) => +v.toFixed(3)),
-                max: t.box.max.toArray().map((v) => +v.toFixed(3)) } : null,
+    bbox: { size: [t.size.x, t.size.y, t.size.z].map((v) => +v.toFixed(3)),
+            min: t.box.min.toArray().map((v) => +v.toFixed(3)),
+            max: t.box.max.toArray().map((v) => +v.toFixed(3)) },
+    analyze: state.analyze || null,
     view: { camera: camera.position.toArray().map((v) => +v.toFixed(2)),
             target: controls.target.toArray().map((v) => +v.toFixed(2)) },
     measurements: state.measures.map((m) => {
@@ -608,19 +740,26 @@ async function saveTask() {
       normal: p.normal.map((v) => +v.toFixed(3)),
       comment: p.comment,
       camera: { pos: p.camera.pos.map((v) => +v.toFixed(2)), target: p.camera.target.map((v) => +v.toFixed(2)) } })),
+    strokes: state.strokes.map((s) => ({ points: s.points })),
     compare: state.compare,
     pose: state.ref ? { shift: state.ref.mesh.position.toArray().map((v) => +v.toFixed(3)) } : null,
     clip: Object.fromEntries(AXES.map((ax) => [ax, clip[ax].on ? +clip[ax].t.toFixed(3) : null])),
+    explode: { axis: explode.axis, k: +explode.k.toFixed(3) },
     refRot: state.ref ? state.ref.mesh.rotation.toArray().slice(0, 3).map((v) => +v.toFixed(4)) : null,
     note: $('task-note').value,
   };
   const res = await fetch('/api/task', { method: 'POST', body: JSON.stringify(payload) });
   const data = await res.json();
   if (data.error) { $('task-out').textContent = 'ошибка: ' + data.error; hint('задача не сохранилась'); return; }
-  $('task-out').innerHTML = `сохранено: <b>${data.rel}</b><br>скажи в чате: «посмотри задачу»`;
+  state.taskId = data.id;
   window.__lastTask = payload;
   saved(true);
-  hint('задача записана в файл');
+  $('task-out').innerHTML = requestFix
+    ? `в очереди: <b>${data.id}</b><br>${state.pins.length} замеч. · ${state.measures.length} замеров · ${state.strokes.length} штрихов<br>скажи в чате: «посмотри задачу ${data.id}»`
+    : `черновик: <b>${data.id}</b><br>в очередь не поставлен`;
+  hint(requestFix ? 'задача в очереди на исправление' : 'черновик сохранён');
+  await refreshTasks();
+  activate('tasks');
 }
 
 /* ------------------------------------------------------------------ мелочи UI */
@@ -628,58 +767,63 @@ function hint(text) { $('hint').textContent = text; }
 
 function setMode(mode) {
   state.mode = mode;
-  for (const m of ['orbit', 'measure', 'pin', 'move']) {
+  controls.enabled = mode !== 'draw';          // рисование не должно вертеть камеру
+  for (const m of ['orbit', 'measure', 'pin', 'draw', 'move']) {
     const el = $('mode-' + m);
     if (el) el.classList.toggle('active', m === mode);
   }
   hint(mode === 'measure' ? 'клик — точка, второй клик — расстояние'
     : mode === 'pin' ? 'клик по месту, где надо поправить'
+    : mode === 'draw' ? 'веди мышью по детали — линия ляжет на поверхность'
     : mode === 'move' ? 'тяни стрелку или кольцо у эталона'
     : 'вращай: ЛКМ — поворот, колесо — зум, ПКМ/Shift — сдвиг');
 
   if (mode === 'move') {
     if (state.ref) { gizmo.attach(state.ref.mesh); hint('гизмо на эталоне: тяни ось, R — кольца'); }
-    else hint('эталон не загружен — включи его в «Файлах»');
+    else hint('эталона нет — он нужен только для сравнения');
   } else {
     gizmo.detach();
   }
 }
 
 $('mode-orbit').onclick = () => setMode('orbit');
-$('mode-measure').onclick = () => setMode('measure');
-$('mode-pin').onclick = () => setMode('pin');
-$('mode-move').onclick = () => setMode('move');
+$('mode-measure').onclick = () => { setMode('measure'); activate('measure'); };
+$('mode-pin').onclick = () => { setMode('pin'); activate('notes'); };
+$('mode-draw').onclick = () => { setMode('draw'); activate('notes'); };
+$('mode-move').onclick = () => { setMode('move'); activate('params'); };
 $('btn-compare').onclick = compareWithRef;
 $('btn-clear-compare').onclick = clearCompare;
-$('btn-task').onclick = saveTask;
-$('btn-task-top').onclick = saveTask;
+$('btn-fix').onclick = () => saveTask({ request_fix: true });
+$('btn-task-top').onclick = () => saveTask({ request_fix: true });
+$('btn-task').onclick = () => saveTask({});
 $('btn-copy').onclick = async () => {
-  if (!window.__lastTask) { hint('сначала сохрани задачу'); return; }
+  if (!window.__lastTask) { hint('сначала сохрани задачу или черновик'); return; }
   await navigator.clipboard.writeText(JSON.stringify(window.__lastTask, null, 2));
   hint('JSON задачи в буфере обмена');
 };
-$('docname').onclick = () => activate('files');
+$('docname').onclick = () => $('file-input').click();
 $('chk-grid').onchange = (e) => { grid.visible = e.target.checked; };
 $('chk-wire').onchange = (e) => {
-  if (state.model) state.model.mesh.material.wireframe = e.target.checked;
+  if (state.model) state.model.mat.wireframe = e.target.checked;
 };
 $('chk-axes').onchange = (e) => { axes.visible = e.target.checked; };
 $('chk-ghost').onchange = (e) => {
   if (!state.ref) return;
   const ghost = e.target.checked;
-  state.ref.mesh.material.opacity = ghost ? 0.22 : 0.95;
-  state.ref.mesh.material.depthWrite = !ghost;
-  state.ref.mesh.material.needsUpdate = true;
+  state.ref.mat.opacity = ghost ? 0.22 : 0.95;
+  state.ref.mat.depthWrite = !ghost;
+  state.ref.mat.needsUpdate = true;
 };
 $('file-input').onchange = async (e) => {
   for (const f of e.target.files) await uploadAndLoad(f);
 };
 $('btn-open').onclick = () => $('file-input').click();
-const drop = $('dropzone');
-drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('hover'); });
-drop.addEventListener('dragleave', () => drop.classList.remove('hover'));
-drop.addEventListener('drop', async (e) => {
-  e.preventDefault(); drop.classList.remove('hover');
+/* файл можно бросить куда угодно в окне: панели файлов больше нет */
+addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dropping'); });
+addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dropping'); });
+addEventListener('drop', async (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dropping');
   for (const f of e.dataTransfer.files) await uploadAndLoad(f);
 });
 
@@ -693,7 +837,9 @@ async function uploadAndLoad(file) {
 }
 
 addEventListener('keydown', (e) => {
-  if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveTask(); return; }
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveTask({ request_fix: true }); return; }
+  if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveTask({}); return; }
+  if (e.key === 'o' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('file-input').click(); return; }
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.key === 'y' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); redo(); return; }
@@ -701,16 +847,22 @@ addEventListener('keydown', (e) => {
   if (e.key === '2') { setMode('measure'); activate('measure'); }
   if (e.key === '3') { setMode('pin'); activate('notes'); }
   if (e.key === '4') { setMode('move'); activate('params'); }
+  if (e.key === '5') { setMode('draw'); activate('notes'); }
   if (e.key === 'r' || e.key === 'R') {
     const cur = document.querySelector('#gizmo-mode button.on');
     setGizmoMode(cur && cur.dataset.gmode === 'rotate' ? 'translate' : 'rotate');
     if (!gizmoOn() && state.ref) setMode('move');
   }
   if (e.key === 'f' || e.key === 'F') fitCamera();
-  if (e.key === 'Escape' && state.pending) {
-    state.pending = null;
-    measureGroup.children.filter((c) => c.userData.temp).forEach((c) => measureGroup.remove(c));
-    hint('точка отменена');
+  if (e.key === 'Escape') {
+    if (drawing) { drawing = null; }
+    if (state.pending) {
+      state.pending = null;
+      measureGroup.children.filter((c) => c.userData.temp).forEach((c) => measureGroup.remove(c));
+      hint('точка отменена');
+      return;
+    }
+    if (state.mode !== 'orbit') { setMode('orbit'); hint('вышли из режима'); }
   }
 });
 
@@ -771,13 +923,13 @@ function applyClip() {
   for (const role of ['model', 'ref']) {
     const s = state[role];
     if (!s) continue;
-    s.mesh.material.clippingPlanes = planes.length ? planes : null;
-    s.mesh.material.needsUpdate = true;
+    s.mat.clippingPlanes = planes.length ? planes : null;
+    s.mat.needsUpdate = true;
   }
   return planes.length;
 }
 
-document.querySelectorAll('.clip-row').forEach((row) => {
+document.querySelectorAll('.clip-row[data-axis]').forEach((row) => {
   const ax = row.dataset.axis;
   row.querySelector('.clip-on').onchange = (e) => {
     pushUndo();
@@ -792,7 +944,7 @@ document.querySelectorAll('.clip-row').forEach((row) => {
 $('clip-reset').onclick = () => {
   pushUndo();
   for (const ax of AXES) { clip[ax].on = false; clip[ax].t = 0.5; }
-  document.querySelectorAll('.clip-row').forEach((row) => {
+  document.querySelectorAll('.clip-row[data-axis]').forEach((row) => {
     row.querySelector('.clip-on').checked = false;
     row.querySelector('.clip-pos').value = '500';
   });
@@ -886,6 +1038,8 @@ function snapState() {
   return JSON.stringify({
     measures: state.measures,
     pins: state.pins.map((p) => ({ id: p.id, point: p.point, normal: p.normal, comment: p.comment, camera: p.camera })),
+    strokes: state.strokes,
+    explode: { axis: explode.axis, k: explode.k },
     refPos: state.ref ? state.ref.mesh.position.toArray() : null,
     refRot: state.ref ? state.ref.mesh.rotation.toArray().slice(0, 3) : null,
     clip: JSON.parse(JSON.stringify(clip)),
@@ -913,10 +1067,15 @@ function restoreState(json) {
   const s = JSON.parse(json);
   state.measures = s.measures || [];
   state.pins = s.pins || [];
+  state.strokes = s.strokes || [];
   rebuildMeasureLines();
   renderMeasures();
   rebuildPinDots();
   renderPins();
+  rebuildStrokes();
+  renderStrokes();
+  updateLayers();
+  if (s.explode) { explode.axis = s.explode.axis || 'x'; setExplode(s.explode.k || 0); }
   if (state.ref && s.refPos) { state.ref.mesh.position.fromArray(s.refPos); updatePose(); }
   if (state.ref && s.refRot) { state.ref.mesh.rotation.fromArray(s.refRot); updatePose(); }
   if (s.clip) {
@@ -945,6 +1104,359 @@ function redo() {
   hint('шаг возвращён');
 }
 
+/* ------------------------------------------------------------------ видовой куб */
+const VC = 104;
+const vcHost = $('vc-host');
+const vcRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+vcRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+vcRenderer.setSize(VC, VC, false);
+vcRenderer.setClearAlpha(0);
+vcHost.append(vcRenderer.domElement);
+
+const vcScene = new THREE.Scene();
+const vcCam = new THREE.OrthographicCamera(-2.1, 2.1, 2.1, -2.1, 0.1, 40);
+vcScene.add(new THREE.AmbientLight(0xffffff, 2.6));
+const vcLight = new THREE.DirectionalLight(0xffffff, 1.2);
+vcLight.position.set(2, -3, 4);
+vcScene.add(vcLight);
+
+/* подпись грани — текстурой, чтобы куб читался без легенды */
+function faceTexture(text) {
+  const s = 192;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const g = cv.getContext('2d');
+  g.fillStyle = 'rgba(35,40,48,.96)';
+  g.fillRect(0, 0, s, s);
+  g.strokeStyle = 'rgba(140,150,165,.55)';
+  g.lineWidth = 3;
+  g.strokeRect(1.5, 1.5, s - 3, s - 3);
+  g.fillStyle = '#dfe6f2';
+  g.font = '700 84px "IBM Plex Sans", system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, s / 2, s / 2);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+const VC_FACES = ['+X', '−X', '+Y', '−Y', '+Z', '−Z'];  // порядок групп BoxGeometry
+const vcBox = new THREE.Mesh(
+  new THREE.BoxGeometry(1.6, 1.6, 1.6),
+  VC_FACES.map((t) => new THREE.MeshBasicMaterial({ map: faceTexture(t), transparent: false })));
+vcScene.add(vcBox);
+vcScene.add(new THREE.LineSegments(
+  new THREE.EdgesGeometry(vcBox.geometry),
+  new THREE.LineBasicMaterial({ color: 0x8f99a6, transparent: true, opacity: 0.55 })));
+
+const vcRay = new THREE.Raycaster();
+const vcPointer = new THREE.Vector2();
+const vcDown = { at: null, moved: 0 };
+
+function vcSync() {
+  // куб стоит на месте, камера куба повторяет направление основной — видно, куда смотришь
+  const off = new THREE.Vector3().subVectors(camera.position, controls.target);
+  if (off.lengthSq() < 1e-9) return;
+  off.normalize().multiplyScalar(6);
+  vcCam.position.copy(off);
+  // при взгляде вдоль Z (сверху/снизу) опорный «верх» надо менять, иначе кадр выворачивает
+  vcCam.up.set(0, 0, 1);
+  if (Math.abs(off.z) / off.length() > 0.985) vcCam.up.set(0, 1, 0);
+  vcCam.lookAt(0, 0, 0);
+  vcRenderer.render(vcScene, vcCam);
+}
+
+function lookFromNormal(n) {
+  const t = state.model || state.ref;
+  if (!t) { hint('сначала открой STL'); return; }
+  const d = camera.position.distanceTo(controls.target) || Math.max(t.size.x, t.size.y, t.size.z) * 2.5;
+  const dir = new THREE.Vector3(n[0], n[1], n[2]).normalize();
+  camera.up.set(0, 0, 1);
+  if (Math.abs(dir.z) > 0.985) camera.up.set(0, 1, 0);   // сверху/снизу — иначе камера кувыркается
+  camera.position.copy(t.center).add(dir.multiplyScalar(d));
+  controls.target.copy(t.center);
+  controls.update();
+}
+
+vcHost.addEventListener('pointerdown', (e) => {
+  vcDown.at = [e.clientX, e.clientY];
+  vcDown.moved = 0;
+});
+vcHost.addEventListener('pointermove', (e) => {
+  if (!vcDown.at) return;
+  vcDown.moved = Math.max(vcDown.moved, Math.hypot(e.clientX - vcDown.at[0], e.clientY - vcDown.at[1]));
+});
+vcHost.addEventListener('pointerup', (e) => {
+  const moved = vcDown.moved;
+  vcDown.at = null;
+  if (moved > 5) return;                                 // это было не нажатие грани
+  const r = vcRenderer.domElement.getBoundingClientRect();
+  vcPointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+  vcPointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+  vcRay.setFromCamera(vcPointer, vcCam);
+  const hit = vcRay.intersectObject(vcBox, false)[0];
+  if (!hit) return;
+  const n = hit.face.normal.clone();                     // куб не вращён: локальная нормаль = мировая
+  const name = VC_FACES[Math.floor(hit.faceIndex / 2)] || '';
+  lookFromNormal(n.toArray());
+  hint('вид: ' + name.toLowerCase());
+});
+$('btn-iso').onclick = () => setView('iso');
+
+function setViewCubeOnce() { vcSync(); }
+
+/* ------------------------------------------------------------------ разнесение сборки */
+const explode = { axis: 'x', k: 0 };
+const EXPLODE_GAP = 0.8;              // сколько габаритов на шаг разлёта
+
+/* тела ищутся по связности треугольников: STL не индексирован, вершины склеиваем по координате */
+function splitBodies(geo) {
+  const pos = geo.attributes.position;
+  const n = pos.count;
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const union = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[b] = a; };
+
+  const q = 1e4;
+  const seen = new Map();
+  for (let i = 0; i < n; i++) {
+    const k = Math.round(pos.getX(i) * q) + ',' + Math.round(pos.getY(i) * q) + ',' + Math.round(pos.getZ(i) * q);
+    const f = seen.get(k);
+    if (f === undefined) seen.set(k, i); else union(f, i);
+  }
+  // вершины одного треугольника обязаны быть в одной компоненте: иначе
+  // треугольник с уникальными по округлению вершинами считается отдельным телом
+  for (let t = 0; t < n / 3; t++) { union(t * 3, t * 3 + 1); union(t * 3 + 1, t * 3 + 2); }
+
+  const groups = new Map();
+  for (let t = 0; t < n / 3; t++) {
+    const r = find(t * 3);
+    let a = groups.get(r);
+    if (!a) groups.set(r, a = []);
+    a.push(t);
+  }
+  const out = [];
+  for (const tris of groups.values()) {
+    const arr = new Float32Array(tris.length * 9);
+    let o = 0;
+    for (const t of tris) {
+      for (let k = 0; k < 3; k++) {
+        const i = t * 3 + k;
+        arr[o++] = pos.getX(i); arr[o++] = pos.getY(i); arr[o++] = pos.getZ(i);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    g.computeVertexNormals();
+    g.computeBoundingBox();
+    out.push(g);
+  }
+  out.sort((a, b) => b.attributes.position.count - a.attributes.position.count);
+  return out;
+}
+
+function dropParts(role) {
+  const s = state[role];
+  if (!s || !s.parts) return;
+  for (const q of s.parts) { scene.remove(q.mesh); q.geo.dispose(); }
+  s.parts = null;
+}
+
+function ensureParts() {
+  const m = state.model;
+  if (!m) return null;
+  if (m.parts) return m.parts;
+  const tris = m.geo.attributes.position.count / 3;
+  if (tris > 700000) { hint('сетка ' + tris.toLocaleString('ru-RU') + ' граней — разнесение не потяну'); return null; }
+  const t0 = performance.now();
+  let geos = splitBodies(m.geo);
+  if (geos.length > 60) {                       // мусорная нарезка: деталь одна, кусков тысячи
+    hint('сетка не делится на тела — считаю одной деталью');
+    geos.forEach((g) => g.dispose());
+    return null;                                 // тело одно: разносить нечего
+  }
+  m.parts = geos.map((g) => {
+    const mesh = new THREE.Mesh(g, m.mat);
+    mesh.userData.role = 'model';
+    mesh.visible = false;
+    scene.add(mesh);
+    return { geo: g, mesh };
+  });
+  const sec = ((performance.now() - t0) / 1000).toFixed(2);
+  hint('тел в сетке: ' + geos.length + ' · ' + sec + ' с');
+  $('explode-cap').textContent = geos.length > 1
+    ? `тел ${geos.length} — разносит вдоль ${explode.axis.toUpperCase()}, видно, что с чем сходится`
+    : 'тело одно — разносить нечего; срез и замеры работают как обычно';
+  return m.parts;
+}
+
+function setExplode(k) {
+  explode.k = Math.max(0, Math.min(1, k));
+  $('explode-range').value = String(Math.round(explode.k * 1000));
+  const m = state.model;
+  if (!m) { $('explode-val').textContent = '—'; return; }
+
+  const back = () => {
+    if (m.parts) m.parts.forEach((q) => { q.mesh.visible = false; q.mesh.position.set(0, 0, 0); });
+    m.mesh.visible = $('vis-model').checked;
+  };
+  if (explode.k === 0) { back(); $('explode-val').textContent = '0 мм'; return; }
+
+  const parts = ensureParts();
+  if (!parts) { back(); $('explode-val').textContent = '—'; return; }
+  if (parts.length < 2) {
+    back();
+    $('explode-val').textContent = 'тело 1';
+    $('explode-cap').textContent = 'в этом файле одно тело — разнести нечего';
+    return;
+  }
+
+  m.mesh.visible = false;
+  const i = AXIS_I[explode.axis];
+  const lo = m.box.min.getComponent(i), hi = m.box.max.getComponent(i);
+  const span = Math.max(hi - lo, 0.001);
+  const n = parts.length;
+  parts.forEach((q, idx) => {
+    q.mesh.visible = $('vis-model').checked;
+    const off = (idx - (n - 1) / 2) * span * EXPLODE_GAP * explode.k;
+    q.mesh.position.set(0, 0, 0);
+    q.mesh.position.setComponent(i, off);
+  });
+  $('explode-val').textContent = fmt(span * EXPLODE_GAP * explode.k) + ' мм';
+  $('explode-cap').textContent = `тел ${n} вдоль ${explode.axis.toUpperCase()} — шаг ${fmt(span * EXPLODE_GAP * explode.k)} мм`;
+}
+
+function setExplodeAxis(axis) {
+  explode.axis = axis;
+  document.querySelectorAll('#explode-axis button').forEach((b) => b.classList.toggle('on', b.dataset.axis === axis));
+  if (explode.k > 0) setExplode(explode.k);
+}
+
+document.querySelectorAll('#explode-axis button').forEach((b) => { b.onclick = () => setExplodeAxis(b.dataset.axis); });
+$('explode-range').oninput = (e) => setExplode(+e.target.value / 1000);
+$('explode-range').onchange = () => pushUndo();
+$('explode-step').onclick = () => {
+  const n = state.model && state.model.parts ? state.model.parts.length : 0;
+  const step = n > 1 ? 1 / (n - 1) : 0.2;
+  const k = Math.round((explode.k + step) * 1000) / 1000;
+  setExplode(k > 1.0001 ? 0 : k);
+  hint(k > 1.0001 ? 'собрал обратно' : 'шаг разнесения ' + Math.round(Math.min(k, 1) * 100) + '%');
+};
+$('explode-all').onclick = () => setExplode(explode.k >= 1 ? 0 : 1);
+$('explode-reset').onclick = () => { pushUndo(); setExplode(0); hint('собрано'); };
+
+/* ------------------------------------------------------------------ рисование по модели */
+const strokeGroup = new THREE.Group();
+scene.add(strokeGroup);
+let drawing = null;
+const STROKE_LIFT = 0.15;             // мм над поверхностью, чтобы линия не тонула в сетке
+
+function liftedPoint(hit) {
+  return hit.point.clone().add(hit.normal.clone().multiplyScalar(STROKE_LIFT));
+}
+
+function strokeStart(e) {
+  const hit = pick(e);
+  if (!hit) { hint('веди по самой детали'); return; }
+  pushUndo();
+  const p = liftedPoint(hit);
+  drawing = { points: [p.toArray().map((v) => +v.toFixed(3))], line: null };
+  const g = new THREE.BufferGeometry().setFromPoints([p, p]);
+  drawing.line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xff5ea8 }));
+  strokeGroup.add(drawing.line);
+}
+
+function strokePoint(e) {
+  if (!drawing) return;
+  const hit = pick(e);
+  if (!hit) return;
+  const p = liftedPoint(hit);
+  const last = new THREE.Vector3(...drawing.points[drawing.points.length - 1]);
+  if (p.distanceTo(last) < 0.22) return;          // прореживаем: иначе на каждый пиксель своя точка
+  drawing.points.push(p.toArray().map((v) => +v.toFixed(3)));
+  drawing.line.geometry.setFromPoints(drawing.points.map((q) => new THREE.Vector3(...q)));
+}
+
+function strokeEnd() {
+  if (!drawing) return;
+  const d = drawing;
+  drawing = null;
+  strokeGroup.remove(d.line);
+  d.line.geometry.dispose();
+  d.line.material.dispose();
+  if (d.points.length < 2) { hint('штрих из одной точки не сохраняю'); return; }
+  state.strokes.push({ points: d.points });
+  rebuildStrokes();
+  renderStrokes();
+  updateLayers();
+  hint('штрих добавлен — их ' + state.strokes.length);
+}
+
+function rebuildStrokes() {
+  [...strokeGroup.children].forEach((c) => {
+    strokeGroup.remove(c);
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) c.material.dispose();
+  });
+  for (const s of state.strokes) {
+    if (!s.points || s.points.length < 2) continue;
+    const g = new THREE.BufferGeometry().setFromPoints(s.points.map((q) => new THREE.Vector3(...q)));
+    strokeGroup.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xff5ea8 })));
+  }
+  strokeGroup.visible = $('vis-strokes').checked;
+}
+
+function renderStrokes() {
+  $('s-count').textContent = state.strokes.length;
+  const box = $('stroke-list');
+  box.innerHTML = '';
+  if (!state.strokes.length) { box.innerHTML = '<div class="empty">пока пусто</div>'; return; }
+  state.strokes.forEach((s, i) => {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.innerHTML = `<div class="head"><span class="idx">${i + 1}</span>
+        <span class="txt">штрих, ${s.points.length} точек</span>
+        <button data-del="${i}">×</button></div>`;
+    el.querySelector('[data-del]').onclick = (ev) => {
+      ev.stopPropagation();
+      pushUndo();
+      state.strokes.splice(i, 1);
+      rebuildStrokes();
+      renderStrokes();
+      updateLayers();
+    };
+    box.append(el);
+  });
+}
+$('strokes-clear').onclick = () => {
+  pushUndo();
+  state.strokes = [];
+  rebuildStrokes();
+  renderStrokes();
+  updateLayers();
+  hint('рисунок стёрт');
+};
+
+/* ------------------------------------------------------------------ видимость слоёв */
+$('vis-model').onchange = (e) => {
+  const m = state.model;
+  if (!m) return;
+  if (m.parts && explode.k > 0) m.parts.forEach((q) => { q.mesh.visible = e.target.checked; });
+  else m.mesh.visible = e.target.checked;
+  hint(e.target.checked ? 'модель показываю' : 'модель спрятана');
+};
+$('vis-ref').onchange = (e) => {
+  if (!state.ref) return;
+  state.ref.mesh.visible = e.target.checked;
+  hint(e.target.checked ? 'эталон показываю' : 'эталон спрятан');
+};
+$('vis-strokes').onchange = (e) => {
+  strokeGroup.visible = e.target.checked;
+  hint(e.target.checked ? 'рисунок показываю' : 'рисунок спрятан');
+};
+
 /* ------------------------------------------------------------------ облёт */
 $('btn-spin').onclick = () => {
   controls.autoRotate = !controls.autoRotate;
@@ -970,6 +1482,7 @@ function loop() {
     controls.update();
     renderer.render(scene, camera);
     updateLabels();
+    vcSync();
   } catch (err) {
     // кадр не должен умирать молча: показываем причину и продолжаем крутить
     const st = document.querySelector('.status .hint') || document.querySelector('.status');
@@ -980,12 +1493,15 @@ function loop() {
 }
 
 resize();
-refreshFiles();
+refreshTasks();
 setMode('orbit');
 renderMeasures();
 renderPins();
+renderStrokes();
 buildPill();
+updateLayers();
 saved(false);
+setViewCubeOnce();
 
 /* ссылка вида ?model=path&ref=path&mode=measure — открыть сразу с сетками */
 const params = new URLSearchParams(location.search);
@@ -1048,8 +1564,10 @@ async function selftest() {
     }
 
     const res = await fetch('/api/task', { method: 'POST', body: JSON.stringify(
-      { kind: 'selftest', model: state.model && state.model.path, ref: state.ref && state.ref.path,
-        measurements: state.measures.length, pins: state.pins.map((q) => ({ id: q.id, comment: q.comment })),
+      { kind: 'selftest', model: state.model ? { path: state.model.path } : null,
+        ref: state.ref ? { path: state.ref.path } : null,
+        measurements: state.measures.map((m) => ({ a: m.a, b: m.b })),
+        pins: state.pins.map((q) => ({ id: q.id, comment: q.comment, point: q.point })),
         pose: state.ref ? state.ref.mesh.position.toArray() : null,
         clip: Object.fromEntries(AXES.map((ax) => [ax, clip[ax].on ? clip[ax].t : null])),
         note: 'самопроверка интерфейса' }) });
@@ -1058,7 +1576,7 @@ async function selftest() {
     if (!task.rel) out.errors.push('задача не сохранилась');
 
     // три плоскости: ставим все галочки, у каждой своё положение
-    const rows = [...document.querySelectorAll('.clip-row')];
+    const rows = [...document.querySelectorAll('.clip-row[data-axis]')];
     rows.forEach((row, i) => {
       row.querySelector('.clip-on').checked = true;
       row.querySelector('.clip-on').dispatchEvent(new Event('change'));
@@ -1066,14 +1584,14 @@ async function selftest() {
       rng.value = String(350 + i * 120);
       rng.dispatchEvent(new Event('input'));
     });
-    out.clipPlanes = (state.model.mesh.material.clippingPlanes || []).length;
+    out.clipPlanes = (state.model.mat.clippingPlanes || []).length;
     out.clipLabels = rows.map((row) => row.dataset.axis + ':' + row.querySelector('.clip-val').textContent).join(' ');
     if (out.clipPlanes !== 3) out.errors.push('три плоскости не применились: ' + out.clipPlanes);
     rows.forEach((row) => {
       row.querySelector('.clip-on').checked = false;
       row.querySelector('.clip-on').dispatchEvent(new Event('change'));
     });
-    if (state.model.mesh.material.clippingPlanes) out.errors.push('срезы не снялись');
+    if (state.model.mat.clippingPlanes) out.errors.push('срезы не снялись');
 
     // гизмо: режим «двигать» должен привязаться к эталону, поворот — попасть в позу
     if (state.ref) {
@@ -1100,6 +1618,70 @@ async function selftest() {
 
     setMode('orbit');
 
+    // ── п.1: видовой куб ────────────────────────────────────────
+    const vcCanvas = vcHost.querySelector('canvas');
+    out.viewcube = !!vcCanvas && vcCanvas.width > 40;
+    if (!out.viewcube) out.errors.push('видовой куб не отрисовался');
+    vcSync();
+    const camBefore = camera.position.clone();
+    const vr = vcCanvas.getBoundingClientRect();
+    const vx = vr.left + vr.width / 2, vy = vr.top + vr.height / 2;
+    vcHost.dispatchEvent(new PointerEvent('pointerdown', { clientX: vx, clientY: vy, bubbles: true, pointerId: 7 }));
+    vcHost.dispatchEvent(new PointerEvent('pointerup', { clientX: vx, clientY: vy, bubbles: true, pointerId: 7 }));
+    out.cubeSnap = +camBefore.distanceTo(camera.position).toFixed(2);
+    if (out.cubeSnap < 0.01) out.errors.push('клик по грани куба не сменил вид');
+
+    // ── п.2: разнесение ─────────────────────────────────────────
+    setExplode(1);
+    out.explode =
+      { parts: state.model && state.model.parts ? state.model.parts.length : 0,
+        shown: state.model && state.model.parts ? state.model.parts.filter((q) => q.mesh.visible).length : 0,
+        text: $('explode-val').textContent };
+    setExplode(0);
+    out.explodeBack = state.model ? state.model.mesh.visible : false;
+
+    // ── п.4: рисование по поверхности ───────────────────────────
+    setMode('draw');
+    setView('iso');
+    camera.updateMatrixWorld(true);
+    const sb2 = screenBox();                     // после клика по кубу вид другой — мерим заново
+    const st = (fx, fy) => ({ clientX: sb2.x0 + (sb2.x1 - sb2.x0) * fx, clientY: sb2.y0 + (sb2.y1 - sb2.y0) * fy });
+    // на сборке из нескольких тел центр кадра бывает пустым — ищем точку с геометрией
+    let hit = null;
+    for (let gx = 0.15; gx <= 0.87 && !hit; gx += 0.09)
+      for (let gy = 0.15; gy <= 0.87 && !hit; gy += 0.09)
+        if (pick(st(gx, gy))) hit = { gx, gy };
+    out.drawHit = !!hit;
+    if (hit) {
+      strokeStart(st(hit.gx - 0.02, hit.gy));
+      strokePoint(st(hit.gx, hit.gy));
+      strokePoint(st(hit.gx + 0.02, hit.gy));
+      strokeEnd();
+    }
+    out.strokes = state.strokes.length;
+    out.strokeLines = strokeGroup.children.length;
+    if (!out.strokes) out.errors.push('рисование не дало штриха');
+    out.strokeToggleOff = (() => { const cb = $('vis-strokes'); cb.checked = false; cb.dispatchEvent(new Event('change'));
+                                   const v = strokeGroup.visible; cb.checked = true; cb.dispatchEvent(new Event('change')); return v; })();
+    setMode('orbit');
+
+    // ── п.5: авто-разбор и слои ────────────────────────────────
+    out.analyze = state.analyze ? { tris: state.analyze.triangles, bodies: state.analyze.bodies, sec: state.analyze.seconds } : null;
+    if (state.model && !state.analyze) out.errors.push('авто-разбор не пришёл');
+    out.analyzeText = $('analyze-out').textContent.replace(/\s+/g, ' ').slice(0, 80);
+    if (state.ref) {
+      const cb = $('vis-ref');
+      cb.checked = false; cb.dispatchEvent(new Event('change'));
+      out.refHidden = state.ref.mesh.visible === false;
+      cb.checked = true; cb.dispatchEvent(new Event('change'));
+      out.refShown = state.ref.mesh.visible === true;
+      if (!out.refHidden || !out.refShown) out.errors.push('переключатель эталона не работает');
+    }
+
+    // ── задачи: список и возврат ───────────────────────────────
+    await refreshTasks();
+    out.taskRows = document.querySelectorAll('#task-list .trow').length;
+
     out.labels = document.querySelectorAll('#labels .lbl').length;
     out.triangles = state.model ? state.model.geo.attributes.position.count / 3 : 0;
     out.dom = {
@@ -1112,6 +1694,7 @@ async function selftest() {
     out.errors.push('исключение: ' + e.message + ' @ ' + String((e.stack || '').split('\n')[1] || '').trim().slice(0, 110));
   }
   out.ok = out.errors.length === 0;
+  window.__selftest = out;
   document.title = 'SELFTEST ' + (out.ok ? 'OK' : 'FAIL') + ' ' + JSON.stringify(out);
   if (!params.get('quiet')) hint(JSON.stringify(out));
   return out;
@@ -1120,4 +1703,7 @@ async function selftest() {
 loop();
 
 // отладка из консоли: window.__dbg.state.model.mesh и т.п.
-window.__dbg = { THREE, renderer, camera, scene, controls, gizmo, clip, clipPlanes, state, applyClip, setGizmoMode, updateLabels };
+window.__dbg = { THREE, renderer, camera, scene, controls, gizmo, clip, clipPlanes, state, applyClip,
+  setGizmoMode, updateLabels, explode, setExplode, setExplodeAxis, splitBodies, strokeGroup, vcRenderer, vcSync,
+  loadTask, refreshTasks, saveTask, analyze, selftest,
+  setMode, setView, pick, screenBox, hint, activate, strokeStart, strokePoint, strokeEnd };

@@ -157,6 +157,113 @@ def compare(mine_path: Path, ref_path: Path, max_points: int = 30000, align: boo
     }
 
 
+_ANALYZE_CACHE: dict[str, dict] = {}
+
+
+def analyze(path: Path) -> dict:
+    """Быстрый разбор сетки: её и показываем сразу после загрузки.
+
+    Числа считает trimesh, но результат кешируется по (путь, mtime, размер):
+    разбор 160-тысячной сетки занимает секунды, а гонять его на каждый чих незачем.
+    """
+    try:
+        st = path.stat()
+    except OSError as e:
+        return {"error": str(e)}
+    key = "%s|%d|%d" % (path, st.st_mtime_ns, st.st_size)
+    if key in _ANALYZE_CACHE:
+        return _ANALYZE_CACHE[key]
+
+    import numpy as np
+    import trimesh
+
+    t0 = time.time()
+    mesh = trimesh.load(str(path), force="mesh")
+    if isinstance(mesh, trimesh.Scene):
+        mesh = trimesh.util.concatenate(tuple(mesh.dump()))
+    bodies = 1
+    try:
+        parts = mesh.split(only_watertight=False)
+        bodies = int(len(parts))
+    except Exception:                                    # noqa: BLE001 — число тел не критично
+        parts = []
+    ext = np.asarray(mesh.extents, dtype=float)
+    info = {
+        "path": str(path).replace("\\", "/"),
+        "name": path.name,
+        "bytes": st.st_size,
+        "triangles": int(len(mesh.faces)),
+        "vertices": int(len(mesh.vertices)),
+        "watertight": bool(mesh.is_watertight),
+        "bodies": bodies,
+        "size": [round(float(v), 3) for v in ext],
+        "volume": round(float(mesh.volume), 2) if mesh.is_volume else None,
+        "area": round(float(mesh.area), 2),
+        "seconds": round(time.time() - t0, 2),
+    }
+    # у сборки из нескольких тел — габарит каждого, чтобы разнести их по шагам
+    if 1 < bodies <= 40:
+        rows = []
+        for p in parts:
+            e = np.asarray(p.extents, dtype=float)
+            c = np.asarray(p.centroid, dtype=float)
+            rows.append({"size": [round(float(v), 2) for v in e],
+                         "center": [round(float(v), 2) for v in c],
+                         "triangles": int(len(p.faces))})
+        info["parts"] = rows
+    _ANALYZE_CACHE[key] = info
+    return info
+
+
+def _task_path(v) -> str:
+    """model/ref в старых задачах — строка, в новых — объект {path, bbox}."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return str(v.get("path") or "")
+    return ""
+
+
+def _task_count(v) -> int:
+    """В старых задачах поле могло быть числом, в новых — массивом."""
+    if isinstance(v, bool):
+        return 0
+    if isinstance(v, (int, float)):
+        return int(v)
+    if isinstance(v, (list, tuple)):
+        return len(v)
+    return 0
+
+
+def list_tasks(limit: int = 60) -> list[dict]:
+    """Сохранённые задачи: то, что можно открыть обратно одной строкой."""
+    out = []
+    for f in sorted(TASKS.glob("*.json"), reverse=True)[:limit]:
+        try:
+            t = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(t, dict):
+            continue
+        mp = _task_path(t.get("model"))
+        rp = _task_path(t.get("ref"))
+        out.append({
+            "id": t.get("id") or f.stem,
+            "file": f.name,
+            "saved_at": t.get("saved_at") or time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime)),
+            "status": t.get("status") or ("queued" if t.get("request_fix") else "draft"),
+            "model": posixpath.basename(mp.replace("\\", "/")),
+            "model_path": mp,
+            "ref": posixpath.basename(rp.replace("\\", "/")),
+            "measures": _task_count(t.get("measurements")),
+            "pins": _task_count(t.get("pins")),
+            "strokes": _task_count(t.get("strokes")),
+            "queued": bool(t.get("request_fix")),
+            "note": (t.get("note") or "")[:120],
+        })
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -205,6 +312,24 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if path == "/api/analyze":
+            p = safe_path(q.get("path", [""])[0])
+            if not p or not p.is_file():
+                return self.send_json({"error": "нет файла"}, 404)
+            try:
+                return self.send_json(analyze(p))
+            except ImportError:
+                return self.send_json({"error": "trimesh не установлен: запусти сервер через venv"}, 503)
+            except Exception as e:                     # noqa: BLE001 — текст в интерфейс
+                return self.send_json({"error": "%s: %s" % (type(e).__name__, e)}, 500)
+        if path == "/api/tasks":
+            return self.send_json({"tasks": list_tasks()})
+        if path == "/api/task":
+            name = os.path.basename(q.get("file", [""])[0] or "")
+            f = TASKS / name
+            if not name or not f.is_file():
+                return self.send_json({"error": "нет такой задачи"}, 404)
+            return self.send_json({"task": json.loads(f.read_text(encoding="utf-8")), "file": name})
         if path == "/api/task/latest":
             files = sorted(TASKS.glob("*.json"))
             if not files:
@@ -247,9 +372,17 @@ class Handler(BaseHTTPRequestHandler):
             TASKS.mkdir(parents=True, exist_ok=True)
             stamp = time.strftime("%Y%m%d-%H%M%S")
             dst = TASKS / ("task-%s.json" % stamp)
+            n = 1
+            while dst.exists():                        # две задачи в одну секунду
+                n += 1
+                dst = TASKS / ("task-%s-%d.json" % (stamp, n))
+            task["id"] = dst.stem
             task["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            task["status"] = "queued" if task.get("request_fix") else "draft"
             dst.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
-            return self.send_json({"file": str(dst), "rel": str(dst.relative_to(REPO)).replace("\\", "/")})
+            return self.send_json({"id": task["id"], "queued": bool(task.get("request_fix")),
+                                   "file": str(dst),
+                                   "rel": str(dst.relative_to(REPO)).replace("\\", "/")})
 
         return self.send_text(404, "нет такого эндпоинта")
 

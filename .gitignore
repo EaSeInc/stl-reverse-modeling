@@ -27,3 +27,6 @@ fit_synth_gate.json
 tasks/
 viewer/uploads/
 viewer/.browser-profile/
+
+# отчёты прогонов
+out/

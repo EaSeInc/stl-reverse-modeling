@@ -60,18 +60,19 @@
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h11M4 7l3-3M4 7l3 3"/><path d="M20 17H9M20 17l-3-3M20 17l-3 3"/></svg>
       Сравнить
     </button>
-    <button class="btn primary" id="btn-task-top" title="сохранить задачу агенту (Ctrl+S)">
+    <button class="btn primary" id="btn-task-top" title="собрать задачу и поставить в очередь (Ctrl+Enter)">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7"/><path d="M8 20v-6h8v6"/></svg>
-      Сохранить <span class="kbd">Ctrl S</span>
+      Запустить исправление
     </button>
+    <input type="file" id="file-input" accept=".stl,.obj,.ply" multiple hidden>
   </header>
 
   <div id="body">
 
     <nav id="rail">
-      <button data-panel="files" aria-pressed="true">
-        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        <span>Файлы</span>
+      <button data-panel="tasks">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5h16M4 12h16M4 19h10"/></svg>
+        <span>Задачи</span>
       </button>
       <button data-panel="params">
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 6h8M16 6h4M4 12h3M11 12h9M4 18h10M18 18h2"/><circle cx="14" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></svg>
@@ -97,39 +98,49 @@
     </nav>
 
     <aside id="side">
-      <section class="panel" data-panel="files">
-        <div class="side-hd"><span class="hd-t">Файлы STL</span><span class="hd-count" id="files-count">—</span>
+      <section class="panel" data-panel="tasks" hidden>
+        <div class="side-hd"><span class="hd-t">Задачи</span><span class="hd-count" id="tasks-count">—</span>
           <div class="grow"></div>
-          <button class="ibtn s" id="files-refresh" title="обновить список">
+          <button class="ibtn s" id="tasks-refresh" title="обновить список">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 8.5"/><path d="M20 3.5v5h-5"/></svg>
           </button>
         </div>
-        <div id="file-list" class="list"></div>
-        <label id="dropzone" class="dropzone">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 16V5M7 10l5-5 5 5"/><path d="M5 15v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4"/></svg>
-          перетащи STL сюда
-          <input type="file" id="file-input" accept=".stl" multiple hidden>
-        </label>
+        <div id="task-list" class="list"></div>
+        <div class="hintline">перетащи STL в окно или <b>Ctrl+O</b> — начнётся новое</div>
       </section>
 
       <section class="panel" data-panel="params" hidden>
         <div class="side-hd"><span class="hd-t">Что в сцене</span></div>
         <div class="pad">
-          <div class="layer" id="layer-model"><span class="dot model"></span><span class="lname">моя модель</span><span class="lsize">—</span></div>
-          <div class="layer" id="layer-ref"><span class="dot ref"></span><span class="lname">эталон</span><span class="lsize">—</span></div>
+          <label class="layer"><input type="checkbox" id="vis-model" checked><span class="dot model"></span>
+            <span class="lname">моя модель</span><span class="lsize" id="layer-model">—</span></label>
+          <label class="layer"><input type="checkbox" id="vis-ref" checked><span class="dot ref"></span>
+            <span class="lname">эталон</span><span class="lsize" id="layer-ref">—</span></label>
+          <label class="layer"><input type="checkbox" id="vis-strokes" checked>
+            <span class="lname">рисунок</span><span class="lsize" id="layer-strokes">—</span></label>
           <div id="bbox" class="bbox"></div>
+          <div id="analyze-out" class="stats"></div>
         </div>
-        <div class="side-hd sub"><span class="hd-t">Показ</span></div>
+        <div class="side-hd sub"><span class="hd-t">Разнесение</span>
+          <div class="grow"></div>
+          <button class="ibtn s" id="explode-reset" title="собрать обратно">⟲</button>
+        </div>
         <div class="pad">
-          <label class="chk"><input type="checkbox" id="chk-grid" checked> сетка на полу</label>
-          <label class="chk"><input type="checkbox" id="chk-wire"> каркас</label>
-          <label class="chk"><input type="checkbox" id="chk-ghost" checked> эталон призраком</label>
-          <label class="chk"><input type="checkbox" id="chk-axes"> оси X/Y/Z</label>
+          <div class="seg" id="explode-axis">
+            <button data-axis="x" class="on">X</button><button data-axis="y">Y</button><button data-axis="z">Z</button>
+          </div>
+          <div class="clip-row">
+            <span class="ax">шаг</span>
+            <input type="range" class="clip-pos" id="explode-range" min="0" max="1000" value="0">
+            <span class="clip-val" id="explode-val">—</span>
+          </div>
+          <div class="row">
+            <button class="btn sm" id="explode-step">по шагам ▸</button>
+            <button class="btn sm" id="explode-all">все сразу</button>
+          </div>
+          <div class="cap" id="explode-cap">разносит тела сборки вдоль оси — видно, что с чем сходится</div>
         </div>
-      </section>
-
-      <section class="panel" data-panel="params" hidden>
-        <div class="side-hd"><span class="hd-t">Сечение</span>
+        <div class="side-hd sub"><span class="hd-t">Сечение</span>
           <div class="grow"></div>
           <button class="ibtn s" id="clip-reset" title="снять все срезы">⟲</button>
         </div>
@@ -149,7 +160,14 @@
             <input type="range" class="clip-pos" min="0" max="1000" value="500" disabled>
             <span class="clip-val">—</span>
           </div>
-          <div class="cap">три плоскости сразу: оставляют только то, что ниже каждой</div>
+          <div class="cap">включи ось и тяни <b>ручку в центре плоскости</b> прямо по модели</div>
+        </div>
+        <div class="side-hd sub"><span class="hd-t">Показ</span></div>
+        <div class="pad">
+          <label class="chk"><input type="checkbox" id="chk-grid" checked> сетка на полу</label>
+          <label class="chk"><input type="checkbox" id="chk-wire"> каркас</label>
+          <label class="chk"><input type="checkbox" id="chk-ghost" checked> эталон призраком</label>
+          <label class="chk"><input type="checkbox" id="chk-axes"> оси X/Y/Z</label>
         </div>
         <div class="side-hd sub"><span class="hd-t">Поза эталона</span></div>
         <div class="pad">
@@ -180,7 +198,12 @@
           <button class="ibtn s" id="pins-clear" title="стереть все замечания">×</button>
         </div>
         <div id="pin-list" class="list"></div>
-        <div class="hintline">режим <b>3</b>: клик по месту, где надо поправить, и напиши что не так</div>
+        <div class="side-hd sub"><span class="hd-t">Рисунок по модели</span><span class="hd-count"><span id="s-count">0</span></span>
+          <div class="grow"></div>
+          <button class="ibtn s" id="strokes-clear" title="стереть весь рисунок">×</button>
+        </div>
+        <div id="stroke-list" class="list"></div>
+        <div class="hintline">режим <b>3</b> — замечание точкой, <b>5</b> — рисовать по поверхности</div>
       </section>
 
       <section class="panel" data-panel="compare" hidden>
@@ -194,16 +217,17 @@
             <div id="legend"><span>0</span><div class="ramp"></div><span id="legend-max">—</span></div>
             <div class="cap">расстояние до эталона, мм · синий — совпало</div>
           </div>
-          <div class="empty" id="compare-empty">загрузи модель и эталон, потом «Сравнить» вверху</div>
+          <div class="empty" id="compare-empty">С одним STL сравнение не нужно — он открывается и читается сам. Сюда придёшь, когда будет с чем сверить.</div>
         </div>
       </section>
 
       <section class="panel" data-panel="help" hidden>
         <div class="side-hd"><span class="hd-t">Клавиши</span></div>
         <div class="pad keys">
-          <div><kbd>1</kbd> орбита</div><div><kbd>2</kbd> замер</div><div><kbd>3</kbd> замечание</div>
-          <div><kbd>4</kbd> гизмо у эталона</div><div><kbd>R</kbd> сдвиг / поворот</div><div><kbd>F</kbd> вписать</div>
-          <div><kbd>Ctrl Z</kbd> отменить</div><div><kbd>Ctrl S</kbd> сохранить задачу</div><div><kbd>Esc</kbd> отменить точку</div>
+          <div><kbd>1</kbd> просто смотреть</div><div><kbd>2</kbd> замер</div><div><kbd>3</kbd> замечание</div>
+          <div><kbd>5</kbd> рисовать</div><div><kbd>4</kbd> гизмо у эталона</div><div><kbd>R</kbd> сдвиг / поворот</div>
+          <div><kbd>F</kbd> вписать</div><div><kbd>Ctrl Z</kbd> отменить</div><div><kbd>Ctrl ↵</kbd> в очередь</div>
+          <div><kbd>Esc</kbd> выйти из режима</div>
           <div class="keysnote">ЛКМ — поворот · колесо — зум · ПКМ или Shift — сдвиг</div>
         </div>
       </section>
@@ -216,30 +240,24 @@
       <div class="crumb">&gt; <span id="crumb-name">пусто</span></div>
 
       <div class="tools">
-        <button class="tool active" id="mode-orbit" title="Вращать (1)">Орбита</button>
         <button class="tool" id="mode-measure" title="Мерить (2)">Замер</button>
         <button class="tool" id="mode-pin" title="Замечание (3)">Замечание</button>
+        <button class="tool" id="mode-draw" title="Рисовать по модели (5)">Рисовать</button>
         <button class="tool" id="mode-move" title="Двигать эталон (4)">Двигать</button>
+        <button class="tool exit" id="mode-orbit" title="Выйти в простой просмотр (Esc)">✕</button>
       </div>
 
-      <div class="cube">
-        <button data-view="back" class="f-back">ЗАД</button>
-        <button data-view="top" class="f-top">ВЕРХ</button>
-        <button data-view="left" class="f-left">ЛЕВ</button>
-        <button data-view="front" class="f-front">ПЕРЕД</button>
-        <button data-view="right" class="f-right">ПРАВО</button>
-        <button data-view="bottom" class="f-bottom">НИЗ</button>
+      <div id="viewcube" title="щелкни по грани — камера встанет точно на неё">
+        <div id="vc-host"></div>
+        <div class="vc-rail">
+          <button id="btn-iso" title="изометрия">Изо</button>
+          <button id="btn-fit" title="вписать (F)">⊡</button>
+        </div>
       </div>
 
       <div class="viewrail">
-        <button data-view="iso" title="изометрия">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/></svg>
-        </button>
         <button id="btn-spin" title="облёт">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 12a8.5 8.5 0 0 1 14.5-6M20.5 12a8.5 8.5 0 0 1-14.5 6"/><path d="M18 3v3.5h-3.5M6 21v-3.5h3.5"/></svg>
-        </button>
-        <button id="btn-fit" title="вписать (F)">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 9V4h5M20 15v5h-5M15 4h5v5M9 20H4v-5"/></svg>
         </button>
       </div>
     </main>
@@ -247,14 +265,15 @@
     <aside id="dock">
       <div class="dock-hd">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m5 8 5 4-5 4M12 17h7"/></svg>
-        <span>Задача агенту</span>
+        <span>Что поправить</span>
         <div class="grow"></div>
         <button class="ibtn s" id="dock-close" title="свернуть">×</button>
       </div>
       <div class="dock-body">
-        <textarea id="task-note" placeholder="Что поправить: словами, как в чате. Замеры и замечания приложатся сами."></textarea>
+        <textarea id="task-note" placeholder="Словами: что не так и что должно быть. Замеры, замечания и рисунок приложатся сами."></textarea>
         <div class="row">
-          <button class="btn sm primary" id="btn-task">Сохранить задачу</button>
+          <button class="btn sm primary" id="btn-fix">Запустить исправление</button>
+          <button class="btn sm" id="btn-task">Черновик</button>
           <button class="btn sm" id="btn-copy">JSON</button>
         </div>
         <div id="task-out" class="task-out"></div>
@@ -265,8 +284,10 @@
 
   <footer class="status">
     <span class="dot" id="st-dot"></span>
-    <span id="hint">выбери файл слева</span>
+    <span id="hint">перетащи STL в окно — или Ctrl+O</span>
     <div class="grow"></div>
+    <span id="st-tris">сетка —</span>
+    <span class="sepv"></span>
     <span id="st-bbox">габарит —</span>
     <span class="sepv"></span>
     <span id="st-rms">дифф —</span>
