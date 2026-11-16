@@ -255,7 +255,7 @@ def list_tasks(limit: int = 60) -> list[dict]:
             "model": posixpath.basename(mp.replace("\\", "/")),
             "model_path": mp,
             "ref": posixpath.basename(rp.replace("\\", "/")),
-            "measures": _task_count(t.get("measurements")),
+            "measures": _task_count(t.get("measurements") or t.get("measures")),
             "pins": _task_count(t.get("pins")),
             "strokes": _task_count(t.get("strokes")),
             "queued": bool(t.get("request_fix")),
