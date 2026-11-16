@@ -294,4 +294,10 @@ button { cursor: pointer; }
 .seg button:hover { background: var(--s3); color: var(--tx); }
 .seg button.on { background: var(--s3); color: var(--acc); }
 .rng { width: 100%; accent-color: var(--acc); height: 18px; margin: 1px 0 0; }
+.clip-row { display: flex; align-items: center; gap: 8px; height: 24px; }
+.clip-row .chk { width: 40px; flex: none; }
+.clip-row .ax { font-family: PlexMono, monospace; font-size: 11px; color: var(--tx2); }
+.clip-pos { flex: 1 1 auto; min-width: 0; accent-color: var(--acc); }
+.clip-pos:disabled { opacity: .45; }
+.clip-val { width: 62px; flex: none; text-align: right; font-family: PlexMono, monospace; font-size: 10px; color: var(--tx3); }
 .tool[disabled] { opacity: .4; cursor: default; }

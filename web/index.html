@@ -129,26 +129,39 @@
       </section>
 
       <section class="panel" data-panel="params" hidden>
-        <div class="side-hd"><span class="hd-t">Сечение</span><span class="hd-count" id="clip-val">—</span>
+        <div class="side-hd"><span class="hd-t">Сечение</span>
           <div class="grow"></div>
-          <button class="ibtn s" id="clip-reset" title="вернуть полный вид">⟲</button>
+          <button class="ibtn s" id="clip-reset" title="снять все срезы">⟲</button>
         </div>
         <div class="pad">
-          <label class="chk"><input type="checkbox" id="chk-clip"> резать модель плоскостью</label>
-          <div class="seg" id="clip-axis">
-            <button data-axis="x">X</button><button data-axis="y">Y</button><button data-axis="z" class="on">Z</button>
+          <div class="clip-row" data-axis="x">
+            <label class="chk"><input type="checkbox" class="clip-on"><span class="ax">X</span></label>
+            <input type="range" class="clip-pos" min="0" max="1000" value="500" disabled>
+            <span class="clip-val">—</span>
           </div>
-          <input type="range" id="clip-pos" min="0" max="1000" value="500" class="rng">
-          <div class="cap">ниже плоскости остаётся, выше — отрезано</div>
+          <div class="clip-row" data-axis="y">
+            <label class="chk"><input type="checkbox" class="clip-on"><span class="ax">Y</span></label>
+            <input type="range" class="clip-pos" min="0" max="1000" value="500" disabled>
+            <span class="clip-val">—</span>
+          </div>
+          <div class="clip-row" data-axis="z">
+            <label class="chk"><input type="checkbox" class="clip-on"><span class="ax">Z</span></label>
+            <input type="range" class="clip-pos" min="0" max="1000" value="500" disabled>
+            <span class="clip-val">—</span>
+          </div>
+          <div class="cap">три плоскости сразу: оставляют только то, что ниже каждой</div>
         </div>
         <div class="side-hd sub"><span class="hd-t">Поза эталона</span></div>
         <div class="pad">
-          <div class="stats" id="pose-out">сдвиг 0.00 · 0.00 · 0.00 мм<br>поворот 0°</div>
+          <div class="seg" id="gizmo-mode">
+            <button data-gmode="translate" class="on">сдвиг</button><button data-gmode="rotate">поворот</button>
+          </div>
+          <div class="stats" id="pose-out">сдвиг 0.00 · 0.00 · 0.00 мм<br>поворот 0.00 · 0.00 · 0.00°</div>
           <div class="row">
             <button class="btn sm" id="pose-reset">сбросить позу</button>
             <button class="btn sm" id="pose-snap">по центру</button>
           </div>
-          <div class="cap">режим <b>4</b>: тащи эталон мышью, чтобы приложить к своей модели</div>
+          <div class="cap">режим <b>4</b> — стрелки и кольца у эталона; <b>R</b> меняет сдвиг на поворот</div>
         </div>
       </section>
 
@@ -189,7 +202,7 @@
         <div class="side-hd"><span class="hd-t">Клавиши</span></div>
         <div class="pad keys">
           <div><kbd>1</kbd> орбита</div><div><kbd>2</kbd> замер</div><div><kbd>3</kbd> замечание</div>
-          <div><kbd>4</kbd> двигать эталон</div><div><kbd>F</kbd> вписать</div>
+          <div><kbd>4</kbd> гизмо у эталона</div><div><kbd>R</kbd> сдвиг / поворот</div><div><kbd>F</kbd> вписать</div>
           <div><kbd>Ctrl Z</kbd> отменить</div><div><kbd>Ctrl S</kbd> сохранить задачу</div><div><kbd>Esc</kbd> отменить точку</div>
           <div class="keysnote">ЛКМ — поворот · колесо — зум · ПКМ или Shift — сдвиг</div>
         </div>
@@ -262,5 +275,13 @@
 
 <div id="measure-hud" class="hidden"></div>
 <script type="module" src="app.js"></script>
+  <script>
+    // ошибки не должны тонуть в консоли: показываем их в строке состояния
+    window.addEventListener('error', (e) => {
+      document.title = 'ERR ' + (e.message || 'сбой');
+      const st = document.querySelector('.status');
+      if (st) st.textContent = 'ошибка: ' + (e.message || e.error) + ' — ' + (e.filename || '').split('/').pop() + ':' + (e.lineno || 0);
+    });
+  </script>
 </body>
 </html>

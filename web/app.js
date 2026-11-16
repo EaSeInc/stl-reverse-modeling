@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 /* ------------------------------------------------------------------ сцена */
@@ -40,9 +41,12 @@ const axes = new THREE.AxesHelper(6);
 axes.visible = false;
 scene.add(axes);
 
-/* срез: одна плоскость, ось и положение — из панели «Слои» */
-const clip = { on: false, axis: 'z', t: 0.5 };
-const clipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
+/* срез: три независимые плоскости, сколько галочек — столько и режет */
+const AXES = ['x', 'y', 'z'];
+const AXIS_I = { x: 0, y: 1, z: 2 };
+const AXIS_V = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) };
+const clip = { x: { on: false, t: 0.5 }, y: { on: false, t: 0.5 }, z: { on: false, t: 0.5 } };
+const clipPlanes = { x: new THREE.Plane(), y: new THREE.Plane(), z: new THREE.Plane() };
 
 /* ------------------------------------------------------------------ состояние */
 const MODEL_COLOR = new THREE.Color(0xc9d3e2);
@@ -172,6 +176,7 @@ function saved(v) {
 }
 
 function dropSlot(role) {
+  if (role === 'ref' && gizmoOn()) gizmo.detach();
   const cur = state[role];
   if (cur) { scene.remove(cur.mesh); cur.geo.dispose(); cur.mesh.material.dispose(); }
   state[role] = null;
@@ -301,7 +306,7 @@ let downPos = null;
 
 canvas.addEventListener('pointerdown', (e) => {
   downPos = [e.clientX, e.clientY];
-  if (state.mode === 'move') dragStart(e);
+  if (state.mode === 'move' && !gizmoOn()) dragStart(e);
 });
 canvas.addEventListener('pointermove', (e) => { if (drag) dragMove(e); });
 canvas.addEventListener('pointerup', (e) => {
@@ -605,7 +610,8 @@ async function saveTask() {
       camera: { pos: p.camera.pos.map((v) => +v.toFixed(2)), target: p.camera.target.map((v) => +v.toFixed(2)) } })),
     compare: state.compare,
     pose: state.ref ? { shift: state.ref.mesh.position.toArray().map((v) => +v.toFixed(3)) } : null,
-    clip: { on: clip.on, axis: clip.axis, t: +clip.t.toFixed(3) },
+    clip: Object.fromEntries(AXES.map((ax) => [ax, clip[ax].on ? +clip[ax].t.toFixed(3) : null])),
+    refRot: state.ref ? state.ref.mesh.rotation.toArray().slice(0, 3).map((v) => +v.toFixed(4)) : null,
     note: $('task-note').value,
   };
   const res = await fetch('/api/task', { method: 'POST', body: JSON.stringify(payload) });
@@ -628,8 +634,15 @@ function setMode(mode) {
   }
   hint(mode === 'measure' ? 'клик — точка, второй клик — расстояние'
     : mode === 'pin' ? 'клик по месту, где надо поправить'
-    : mode === 'move' ? 'тащи эталон мышью — он поедет за курсором'
+    : mode === 'move' ? 'тяни стрелку или кольцо у эталона'
     : 'вращай: ЛКМ — поворот, колесо — зум, ПКМ/Shift — сдвиг');
+
+  if (mode === 'move') {
+    if (state.ref) { gizmo.attach(state.ref.mesh); hint('гизмо на эталоне: тяни ось, R — кольца'); }
+    else hint('эталон не загружен — включи его в «Файлах»');
+  } else {
+    gizmo.detach();
+  }
 }
 
 $('mode-orbit').onclick = () => setMode('orbit');
@@ -688,6 +701,11 @@ addEventListener('keydown', (e) => {
   if (e.key === '2') { setMode('measure'); activate('measure'); }
   if (e.key === '3') { setMode('pin'); activate('notes'); }
   if (e.key === '4') { setMode('move'); activate('params'); }
+  if (e.key === 'r' || e.key === 'R') {
+    const cur = document.querySelector('#gizmo-mode button.on');
+    setGizmoMode(cur && cur.dataset.gmode === 'rotate' ? 'translate' : 'rotate');
+    if (!gizmoOn() && state.ref) setMode('move');
+  }
   if (e.key === 'f' || e.key === 'F') fitCamera();
   if (e.key === 'Escape' && state.pending) {
     state.pending = null;
@@ -731,50 +749,74 @@ function updateLabels() {
   for (const p of state.pins) push(new THREE.Vector3(...p.point), String(p.id), 'pin');
 }
 
-/* ------------------------------------------------------------------ срез плоскостью */
+/* ------------------------------------------------------------------ срез плоскостями */
 function applyClip() {
   const t = state.model || state.ref;
-  const on = clip.on && !!t;
+  const planes = [];
+  for (const ax of AXES) {
+    const row = document.querySelector(`.clip-row[data-axis="${ax}"]`);
+    if (!row) continue;
+    const rng = row.querySelector('.clip-pos');
+    const val = row.querySelector('.clip-val');
+    rng.disabled = !clip[ax].on;
+    clipPlanes[ax].normal.copy(AXIS_V[ax]);
+    if (!clip[ax].on || !t) { val.textContent = '—'; continue; }
+    const i = AXIS_I[ax];
+    const lo = t.box.min.getComponent(i), hi = t.box.max.getComponent(i);
+    const v = lo + (hi - lo) * clip[ax].t;
+    clipPlanes[ax].constant = -v;         // режем положительную сторону: остаётся всё ниже v
+    planes.push(clipPlanes[ax]);
+    val.textContent = fmt(v) + ' мм';
+  }
   for (const role of ['model', 'ref']) {
     const s = state[role];
     if (!s) continue;
-    s.mesh.material.clippingPlanes = on ? [clipPlane] : null;
+    s.mesh.material.clippingPlanes = planes.length ? planes : null;
     s.mesh.material.needsUpdate = true;
   }
-  const val = $('clip-val');
-  if (!val) return;
-  if (!on) { val.textContent = 'выкл'; return; }
-  const i = { x: 0, y: 1, z: 2 }[clip.axis];
-  const lo = t.box.min.getComponent(i), hi = t.box.max.getComponent(i);
-  const v = lo + (hi - lo) * clip.t;
-  clipPlane.normal.set(i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0);
-  clipPlane.constant = -v;             // three режет положительную сторону: останется всё ниже v
-  val.textContent = `${clip.axis.toUpperCase()} ${fmt(v)} мм`;
+  return planes.length;
 }
 
-$('chk-clip').onchange = (e) => {
-  pushUndo();
-  clip.on = e.target.checked;
-  applyClip();
-  hint(clip.on ? 'срез включён — тяни ползунок' : 'срез выключен');
-};
-$('clip-pos').oninput = (e) => { clip.t = +e.target.value / 1000; applyClip(); };
-$('clip-pos').onchange = () => { pushUndo(); };
-document.querySelectorAll('#clip-axis button').forEach((b) => {
-  b.onclick = () => {
+document.querySelectorAll('.clip-row').forEach((row) => {
+  const ax = row.dataset.axis;
+  row.querySelector('.clip-on').onchange = (e) => {
     pushUndo();
-    clip.axis = b.dataset.axis;
-    document.querySelectorAll('#clip-axis button').forEach((x) => x.classList.toggle('on', x === b));
+    clip[ax].on = e.target.checked;
     applyClip();
+    hint(clip[ax].on ? `срез ${ax.toUpperCase()} включён` : `срез ${ax.toUpperCase()} снят`);
   };
+  row.querySelector('.clip-pos').oninput = (e) => { clip[ax].t = +e.target.value / 1000; applyClip(); };
+  row.querySelector('.clip-pos').onchange = () => pushUndo();
 });
+
 $('clip-reset').onclick = () => {
-  clip.on = false; clip.t = 0.5;
-  $('chk-clip').checked = false;
-  $('clip-pos').value = '500';
+  pushUndo();
+  for (const ax of AXES) { clip[ax].on = false; clip[ax].t = 0.5; }
+  document.querySelectorAll('.clip-row').forEach((row) => {
+    row.querySelector('.clip-on').checked = false;
+    row.querySelector('.clip-pos').value = '500';
+  });
   applyClip();
-  hint('срез убран');
+  hint('все срезы сняты');
 };
+
+/* ------------------------------------------------------------------ гизмо эталона */
+const gizmo = new TransformControls(camera, canvas);
+gizmo.setSize(0.75);
+gizmo.setSpace('world');
+gizmo.addEventListener('mouseDown', () => { controls.enabled = false; pushUndo(); });
+gizmo.addEventListener('mouseUp', () => { controls.enabled = true; updatePose(); });
+gizmo.addEventListener('objectChange', () => updatePose());
+scene.add(gizmo.getHelper());
+
+function gizmoOn() { return !!gizmo.object; }
+
+function setGizmoMode(mode) {
+  gizmo.setMode(mode);
+  document.querySelectorAll('#gizmo-mode button').forEach((b) => b.classList.toggle('on', b.dataset.gmode === mode));
+  hint(mode === 'rotate' ? 'кольца — поворот вокруг осей' : 'стрелки — сдвиг вдоль осей');
+}
+document.querySelectorAll('#gizmo-mode button').forEach((b) => { b.onclick = () => setGizmoMode(b.dataset.gmode); });
 
 /* ------------------------------------------------------------------ тащим эталон мышью */
 let drag = null;
@@ -816,12 +858,15 @@ function updatePose() {
   if (!out) return;
   if (!state.ref) { out.textContent = 'эталона нет'; return; }
   const p = state.ref.mesh.position;
-  out.innerHTML = `сдвиг <b>${fmt(p.x)}</b> · ${fmt(p.y)} · ${fmt(p.z)} мм<br>поворот 0°`;
+  const d = state.ref.mesh.rotation;
+  const deg = (v) => (v * 180 / Math.PI).toFixed(1);
+  out.innerHTML = `сдвиг <b>${fmt(p.x)}</b> · ${fmt(p.y)} · ${fmt(p.z)} мм<br>поворот ${deg(d.x)} · ${deg(d.y)} · ${deg(d.z)}°`;
 }
 $('pose-reset').onclick = () => {
   if (!state.ref) { hint('эталона нет'); return; }
   pushUndo();
   state.ref.mesh.position.set(0, 0, 0);
+  state.ref.mesh.rotation.set(0, 0, 0);
   updatePose();
   hint('поза эталона сброшена');
 };
@@ -842,7 +887,8 @@ function snapState() {
     measures: state.measures,
     pins: state.pins.map((p) => ({ id: p.id, point: p.point, normal: p.normal, comment: p.comment, camera: p.camera })),
     refPos: state.ref ? state.ref.mesh.position.toArray() : null,
-    clip: { on: clip.on, axis: clip.axis, t: clip.t },
+    refRot: state.ref ? state.ref.mesh.rotation.toArray().slice(0, 3) : null,
+    clip: JSON.parse(JSON.stringify(clip)),
   });
 }
 
@@ -872,11 +918,15 @@ function restoreState(json) {
   rebuildPinDots();
   renderPins();
   if (state.ref && s.refPos) { state.ref.mesh.position.fromArray(s.refPos); updatePose(); }
+  if (state.ref && s.refRot) { state.ref.mesh.rotation.fromArray(s.refRot); updatePose(); }
   if (s.clip) {
-    clip.on = !!s.clip.on; clip.axis = s.clip.axis; clip.t = s.clip.t;
-    $('chk-clip').checked = clip.on;
-    $('clip-pos').value = String(Math.round(clip.t * 1000));
-    document.querySelectorAll('#clip-axis button').forEach((b) => b.classList.toggle('on', b.dataset.axis === clip.axis));
+    for (const ax of AXES) {
+      clip[ax].on = !!s.clip[ax].on;
+      clip[ax].t = s.clip[ax].t;
+      const row = document.querySelector(`.clip-row[data-axis="${ax}"]`);
+      row.querySelector('.clip-on').checked = clip[ax].on;
+      row.querySelector('.clip-pos').value = String(Math.round(clip[ax].t * 1000));
+    }
     applyClip();
   }
 }
@@ -916,9 +966,16 @@ addEventListener('resize', resize);
 new ResizeObserver(resize).observe(stage);
 
 function loop() {
-  controls.update();
-  renderer.render(scene, camera);
-  updateLabels();
+  try {
+    controls.update();
+    renderer.render(scene, camera);
+    updateLabels();
+  } catch (err) {
+    // кадр не должен умирать молча: показываем причину и продолжаем крутить
+    const st = document.querySelector('.status .hint') || document.querySelector('.status');
+    if (st) st.textContent = 'кадр упал: ' + err.message;
+    if (!loop.warned) { console.error(err); loop.warned = true; }
+  }
   requestAnimationFrame(loop);
 }
 
@@ -994,43 +1051,53 @@ async function selftest() {
       { kind: 'selftest', model: state.model && state.model.path, ref: state.ref && state.ref.path,
         measurements: state.measures.length, pins: state.pins.map((q) => ({ id: q.id, comment: q.comment })),
         pose: state.ref ? state.ref.mesh.position.toArray() : null,
-        clip: { on: clip.on, axis: clip.axis, t: clip.t },
+        clip: Object.fromEntries(AXES.map((ax) => [ax, clip[ax].on ? clip[ax].t : null])),
         note: 'самопроверка интерфейса' }) });
     const task = await res.json();
     out.taskFile = task.rel || task.error;
     if (!task.rel) out.errors.push('задача не сохранилась');
 
-    // срез плоскостью: включаем и проверяем, что материал реально получил плоскость
-    $('chk-clip').checked = true;
-    $('chk-clip').dispatchEvent(new Event('change'));
-    out.clipLabel = $('clip-val').textContent;
-    out.clipOn = !!(state.model && state.model.mesh.material.clippingPlanes);
-    if (!out.clipOn) out.errors.push('срез не применился к материалу');
-    $('chk-clip').checked = false;
-    $('chk-clip').dispatchEvent(new Event('change'));
-    if (state.model.mesh.material.clippingPlanes) out.errors.push('срез не выключился');
+    // три плоскости: ставим все галочки, у каждой своё положение
+    const rows = [...document.querySelectorAll('.clip-row')];
+    rows.forEach((row, i) => {
+      row.querySelector('.clip-on').checked = true;
+      row.querySelector('.clip-on').dispatchEvent(new Event('change'));
+      const rng = row.querySelector('.clip-pos');
+      rng.value = String(350 + i * 120);
+      rng.dispatchEvent(new Event('input'));
+    });
+    out.clipPlanes = (state.model.mesh.material.clippingPlanes || []).length;
+    out.clipLabels = rows.map((row) => row.dataset.axis + ':' + row.querySelector('.clip-val').textContent).join(' ');
+    if (out.clipPlanes !== 3) out.errors.push('три плоскости не применились: ' + out.clipPlanes);
+    rows.forEach((row) => {
+      row.querySelector('.clip-on').checked = false;
+      row.querySelector('.clip-on').dispatchEvent(new Event('change'));
+    });
+    if (state.model.mesh.material.clippingPlanes) out.errors.push('срезы не снялись');
 
-    // перетаскивание эталона настоящими событиями указателя
+    // гизмо: режим «двигать» должен привязаться к эталону, поворот — попасть в позу
     if (state.ref) {
       setMode('move');
-      const p0 = state.ref.mesh.position.clone();
-      state.model.mesh.visible = false;                     // чтобы луч попал в эталон
-      camera.updateMatrixWorld(true);
-      const c = state.ref.center.clone().add(state.ref.mesh.position).project(camera);
-      const rc = canvas.getBoundingClientRect();
-      const sx = rc.left + (c.x * 0.5 + 0.5) * rc.width;
-      const sy = rc.top + (-c.y * 0.5 + 0.5) * rc.height;
-      const fire = (type, x, y) => canvas.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, bubbles: true, pointerId: 3 }));
-      fire('pointerdown', sx, sy);
-      fire('pointermove', sx + 46, sy + 22);
-      fire('pointerup', sx + 46, sy + 22);
-      state.model.mesh.visible = true;
-      out.dragMoved = +state.ref.mesh.position.distanceTo(p0).toFixed(2);
-      if (!(out.dragMoved > 0)) out.errors.push('эталон не подвинулся за курсором');
+      out.gizmoAttached = gizmoOn();
+      if (!out.gizmoAttached) out.errors.push('гизмо не привязалось к эталону');
+      state.ref.mesh.rotation.z = Math.PI / 6;
+      updatePose();
+      out.poseText = $('pose-out').innerText.replace(/\s+/g, ' ').slice(0, 60);
+      pushUndo();
+      state.ref.mesh.rotation.set(0, 0, 0);
+      updatePose();
       undo();
-      out.undoBack = +state.ref.mesh.position.length().toFixed(3);
-      if (out.undoBack > 0.05) out.errors.push('отмена не вернула позу эталона');
+      out.undoRot = +(state.ref.mesh.rotation.z * 180 / Math.PI).toFixed(1);
+      if (Math.abs(out.undoRot - 30) > 1.5) out.errors.push('отмена не вернула поворот: ' + out.undoRot);
+      state.ref.mesh.rotation.set(0, 0, 0);
+      out.gizmoMode = document.querySelector('#gizmo-mode button.on').dataset.gmode;
+      setGizmoMode('rotate');
+      out.gizmoModeAfter = document.querySelector('#gizmo-mode button.on').dataset.gmode;
+      setGizmoMode('translate');
+      setMode('orbit');
+      out.gizmoDetached = !gizmoOn();
     }
+
     setMode('orbit');
 
     out.labels = document.querySelectorAll('#labels .lbl').length;
@@ -1042,7 +1109,7 @@ async function selftest() {
       status: $('st-bbox').textContent,
     };
   } catch (e) {
-    out.errors.push('исключение: ' + e.message);
+    out.errors.push('исключение: ' + e.message + ' @ ' + String((e.stack || '').split('\n')[1] || '').trim().slice(0, 110));
   }
   out.ok = out.errors.length === 0;
   document.title = 'SELFTEST ' + (out.ok ? 'OK' : 'FAIL') + ' ' + JSON.stringify(out);
@@ -1051,3 +1118,6 @@ async function selftest() {
 }
 
 loop();
+
+// отладка из консоли: window.__dbg.state.model.mesh и т.п.
+window.__dbg = { THREE, renderer, camera, scene, controls, gizmo, clip, clipPlanes, state, applyClip, setGizmoMode, updateLabels };
