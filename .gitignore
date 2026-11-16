@@ -19,3 +19,8 @@ fit_synth_gate.json
 # секреты
 .env
 *.env
+
+# просмотрщик
+tasks/
+viewer/uploads/
+viewer/.browser-profile/

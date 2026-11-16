@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STL: смотрю и мерю</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{"imports": {"three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/"}}
+</script>
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="group">
+      <button id="mode-orbit" class="tool active" title="Вращать (1)">Орбита</button>
+      <button id="mode-measure" class="tool" title="Мерить расстояние (2)">Замер</button>
+      <button id="mode-pin" class="tool" title="Поставить замечание (3)">Замечание</button>
+    </div>
+    <div class="group">
+      <button class="view" data-view="iso">изо</button>
+      <button class="view" data-view="front">спереди</button>
+      <button class="view" data-view="top">сверху</button>
+      <button class="view" data-view="right">сбоку</button>
+    </div>
+    <div class="group">
+      <label class="chk"><input type="checkbox" id="chk-grid" checked> сетка</label>
+      <label class="chk"><input type="checkbox" id="chk-wire"> каркас</label>
+      <label class="chk"><input type="checkbox" id="chk-ghost" checked> эталон призраком</label>
+    </div>
+    <div class="group">
+      <button id="btn-compare" class="accent">сравнить с эталоном</button>
+      <button id="btn-clear-compare" title="Убрать раскраску">сброс цвета</button>
+    </div>
+    <div class="spacer"></div>
+    <div id="hint">выбери файл слева</div>
+  </header>
+
+  <aside id="left">
+    <h2>Файлы</h2>
+    <div id="file-list" class="list"></div>
+    <label id="dropzone">
+      или перетащи STL сюда
+      <input type="file" id="file-input" accept=".stl,.ply,.obj" multiple hidden>
+    </label>
+
+    <h2>Слои</h2>
+    <div id="layers">
+      <div class="layer" id="layer-model"><span class="dot model"></span><span class="lname">моя модель</span><span class="lsize">—</span></div>
+      <div class="layer" id="layer-ref"><span class="dot ref"></span><span class="lname">эталон</span><span class="lsize">—</span></div>
+    </div>
+    <div id="bbox"></div>
+    <div id="compare-box" class="hidden">
+      <h2>Сравнение</h2>
+      <div id="compare-stats"></div>
+      <div id="legend"><span>0</span><div class="ramp"></div><span id="legend-max">—</span></div>
+      <div class="cap">отклонение, мм (синий — совпало)</div>
+    </div>
+  </aside>
+
+  <main id="stage">
+    <canvas id="c"></canvas>
+    <div id="labels"></div>
+  </main>
+
+  <aside id="right">
+    <h2>Замеры <span id="m-count" class="badge">0</span></h2>
+    <div id="measure-list" class="list"></div>
+
+    <h2>Замечания <span id="p-count" class="badge">0</span></h2>
+    <div id="pin-list" class="list"></div>
+
+    <h2>Задача агенту</h2>
+    <textarea id="task-note" placeholder="Что именно поправить: словами, как в чате"></textarea>
+    <div class="row">
+      <button id="btn-task" class="accent">Сохранить задачу</button>
+      <button id="btn-copy">копировать JSON</button>
+    </div>
+    <div id="task-out"></div>
+  </aside>
+</div>
+
+<div id="measure-hud" class="hidden"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
