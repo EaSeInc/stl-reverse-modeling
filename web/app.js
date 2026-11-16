@@ -3,15 +3,16 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 /* ------------------------------------------------------------------ сцена */
-const canvas = document.getElementById('c');
-const stage = document.getElementById('stage');
-const labelsBox = document.getElementById('labels');
+const $ = (id) => document.getElementById(id);
+const canvas = $('c');
+const stage = $('stage');
+const labelsBox = $('labels');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x14161a);
+scene.background = new THREE.Color(0x101215);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
 camera.up.set(0, 0, 1);                       // CAD-ось вверх — Z
@@ -22,20 +23,20 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.screenSpacePanning = true;
 
-scene.add(new THREE.HemisphereLight(0xdde6f5, 0x30363f, 2.1));
-const key = new THREE.DirectionalLight(0xffffff, 1.6);
+scene.add(new THREE.HemisphereLight(0xdde6f5, 0x2b3038, 2.0));
+const key = new THREE.DirectionalLight(0xfff3e2, 1.7);
 key.position.set(1, -1.4, 2.2);
 scene.add(key);
-const fill = new THREE.DirectionalLight(0x9fc4ff, 0.7);
+const fill = new THREE.DirectionalLight(0x9fc4ff, 0.65);
 fill.position.set(-1.6, 1.2, 0.6);
 scene.add(fill);
 
-const grid = new THREE.GridHelper(200, 40, 0x38424f, 0x262d36);
+const grid = new THREE.GridHelper(200, 40, 0x333b46, 0x20262d);
 grid.rotation.x = Math.PI / 2;                // в плоскость XY
 scene.add(grid);
 
 const axes = new THREE.AxesHelper(6);
-axes.visible = false;               // включается галочкой «сетка»
+axes.visible = false;
 scene.add(axes);
 
 /* ------------------------------------------------------------------ состояние */
@@ -49,10 +50,53 @@ const state = {
   pins: [],
   compare: null,
   scaleMax: 1,
+  saved: false,
 };
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
+
+/* ------------------------------------------------------------------ панели */
+const PANELS = ['files', 'params', 'measure', 'notes', 'compare', 'help'];
+function activate(name) {
+  const app = $('app');
+  app.classList.remove('no-side');            // панель снова нужна
+  $('lay-panels').setAttribute('aria-pressed', 'true');
+  for (const p of PANELS) {
+    document.querySelector(`.panel[data-panel="${p}"]`).hidden = p !== name;
+  }
+  document.querySelectorAll('#rail button').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.panel === name));
+  });
+  setTimeout(resize, 0);
+}
+document.querySelectorAll('#rail button').forEach((b) => {
+  b.onclick = () => {
+    const cur = document.querySelector('.panel:not([hidden])');
+    if (cur && cur.dataset.panel === b.dataset.panel) {      // повторный клик — свернуть
+      $('app').classList.add('no-side');
+      $('lay-panels').setAttribute('aria-pressed', 'false');
+      document.querySelectorAll('#rail button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
+      setTimeout(resize, 0);
+      return;
+    }
+    activate(b.dataset.panel);
+  };
+});
+
+function setLayout(mode) {
+  const app = $('app');
+  app.classList.toggle('no-side', mode === 'stage');
+  app.classList.toggle('no-dock', mode === 'stage');
+  $('lay-panels').setAttribute('aria-pressed', String(mode === 'panels' || mode === 'both'));
+  $('lay-dock').setAttribute('aria-pressed', String(mode === 'dock' || mode === 'both'));
+  $('lay-both').setAttribute('aria-pressed', 'false');
+  setTimeout(resize, 0);
+}
+$('lay-panels').onclick = () => setLayout('panels');
+$('lay-dock').onclick = () => setLayout('dock');
+$('lay-both').onclick = () => setLayout('stage');
+$('dock-close').onclick = () => { $('app').classList.add('no-dock'); $('lay-dock').setAttribute('aria-pressed', 'false'); setTimeout(resize, 0); };
 
 /* ------------------------------------------------------------------ загрузка */
 const loader = new STLLoader();
@@ -65,6 +109,7 @@ function bboxOf(geo) {
 }
 
 async function loadFile(path, role) {
+  const t0 = performance.now();
   const res = await fetch('/api/mesh?path=' + encodeURIComponent(path));
   if (!res.ok) { hint('не смог загрузить: ' + (await res.text())); return; }
   const buf = await res.arrayBuffer();
@@ -72,14 +117,16 @@ async function loadFile(path, role) {
   geo.computeVertexNormals();
   setSlot(role, path, geo);
   refreshFiles();
+  buildPill();
+  $('build-time').textContent = ((performance.now() - t0) / 1000).toFixed(1) + ' с';
 }
 
 function setSlot(role, path, geo) {
   dropSlot(role);
   const isModel = role === 'model';
   const mat = isModel
-    ? new THREE.MeshStandardMaterial({ color: MODEL_COLOR.clone(), metalness: 0.15, roughness: 0.55,
-        flatShading: false, vertexColors: false, wireframe: document.getElementById('chk-wire').checked })
+    ? new THREE.MeshStandardMaterial({ color: MODEL_COLOR.clone(), metalness: 0.15, roughness: 0.52,
+        flatShading: false, vertexColors: false, wireframe: $('chk-wire').checked })
     : new THREE.MeshStandardMaterial({ color: new THREE.Color(0x3fb6ff), metalness: 0.0, roughness: 0.8,
         transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide });
 
@@ -88,10 +135,18 @@ function setSlot(role, path, geo) {
   scene.add(mesh);
   const info = { path, geo, mesh, ...bboxOf(geo) };
   state[role] = info;
-  if (isModel) document.getElementById('chk-ghost').checked = true;
+  if (isModel) { $('chk-ghost').checked = true; }
   fitCamera();
   updateLayers();
+  docName();
   hint(isModel ? 'модель: ' + path.split('/').pop() : 'эталон: ' + path.split('/').pop());
+  saved(false);
+}
+
+function saved(v) {
+  state.saved = v;
+  $('save-dot').className = 'dot ' + (v ? 'ok' : 'warn');
+  $('save-text').textContent = v ? 'задача сохранена' : 'не сохранено';
 }
 
 function dropSlot(role) {
@@ -99,7 +154,9 @@ function dropSlot(role) {
   if (cur) { scene.remove(cur.mesh); cur.geo.dispose(); cur.mesh.material.dispose(); }
   state[role] = null;
   state.compare = null;
-  document.getElementById('compare-box').classList.add('hidden');
+  $('compare-box').classList.add('hidden');
+  $('compare-empty').hidden = false;
+  $('st-rms').textContent = 'дифф —';
 }
 
 function fitCamera() {
@@ -120,13 +177,41 @@ function setView(kind) {
   if (!t) return;
   const r = Math.max(t.size.x, t.size.y, t.size.z) * 2.1;
   const c = t.center;
-  const pos = { iso: [c.x + r * .62, c.y - r * .72, c.z + r * .55],
-                front: [c.x, c.y - r, c.z],
-                top: [c.x, c.y, c.z + r],
-                right: [c.x + r, c.y, c.z] }[kind];
+  const pos = {
+    iso:    [c.x + r * .62, c.y - r * .72, c.z + r * .55],
+    front:  [c.x,           c.y - r,        c.z],
+    back:   [c.x,           c.y + r,        c.z],
+    top:    [c.x,           c.y,            c.z + r],
+    bottom: [c.x,           c.y,            c.z - r],
+    right:  [c.x + r,       c.y,            c.z],
+    left:   [c.x - r,       c.y,            c.z],
+  }[kind];
+  if (!pos) return;
   camera.position.set(pos[0], pos[1], pos[2]);
   controls.target.copy(c);
   controls.update();
+}
+document.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => setView(b.dataset.view); });
+$('btn-fit').onclick = () => fitCamera();
+
+/* ------------------------------------------------------------------ пилюля и заголовки */
+function buildPill() {
+  const m = state.model, r = state.ref;
+  const tris = m ? Math.round(m.geo.attributes.position.count / 3) : 0;
+  $('build-dot').className = 'dot ' + (m ? 'ok' : '');
+  $('build-state').textContent = m ? 'Готово' : 'Пусто';
+  $('build-info').textContent = m ? tris.toLocaleString('ru-RU') + ' граней' : '—';
+  const parts = [m, r].filter(Boolean).length;
+  $('st-dot').className = 'dot ' + (m ? 'ok' : 'warn');
+  if (parts) $('st-bbox').textContent = 'сеток ' + parts;
+}
+
+function docName() {
+  const m = state.model || state.ref;
+  const name = m ? m.path.split('/').pop() : 'ничего не открыто';
+  $('docname-text').textContent = name;
+  $('docname-text').title = m ? m.path : '';
+  $('crumb-name').textContent = name;
 }
 
 /* ------------------------------------------------------------------ список файлов */
@@ -136,9 +221,13 @@ async function refreshFiles() {
   const res = await fetch('/api/files');
   const { files } = await res.json();
   fileCache = files;
-  const box = document.getElementById('file-list');
+  const box = $('file-list');
   box.innerHTML = '';
-  if (!files.length) { box.innerHTML = '<div style="color:var(--dim)">тут нет STL — перетащи файл</div>'; return; }
+  $('files-count').textContent = files.length ? String(files.length) : '0';
+  if (!files.length) {
+    box.innerHTML = '<div class="empty">тут нет STL — перетащи файл</div>';
+    return;
+  }
   for (const f of files.slice(0, 400)) {
     const row = document.createElement('div');
     row.className = 'file';
@@ -163,24 +252,26 @@ async function refreshFiles() {
     box.append(row);
   }
 }
+$('files-refresh').onclick = refreshFiles;
 
 function updateLayers() {
   const set = (role, id) => {
-    const el = document.getElementById(id);
+    const el = $(id);
     const info = state[role];
     el.querySelector('.lsize').textContent = info
-      ? `${fmt(info.size.x)} × ${fmt(info.size.y)} × ${fmt(info.size.z)} мм`
+      ? `${fmt(info.size.x)} × ${fmt(info.size.y)} × ${fmt(info.size.z)}`
       : '—';
   };
   set('model', 'layer-model');
   set('ref', 'layer-ref');
 
-  const b = document.getElementById('bbox');
+  const b = $('bbox');
   const t = state.model || state.ref;
-  if (!t) { b.textContent = ''; return; }
+  if (!t) { b.textContent = 'ничего не загружено'; $('st-bbox').textContent = 'габарит —'; return; }
   const bb = t.box;
-  b.innerHTML = `габарит <b>${fmt(t.size.x)} × ${fmt(t.size.y)} × ${fmt(t.size.z)}</b> мм<br>` +
+  b.innerHTML = `<b>${fmt(t.size.x)} × ${fmt(t.size.y)} × ${fmt(t.size.z)}</b> мм<br>` +
     `X ${fmt(bb.min.x)} … ${fmt(bb.max.x)}<br>Y ${fmt(bb.min.y)} … ${fmt(bb.max.y)}<br>Z ${fmt(bb.min.z)} … ${fmt(bb.max.z)}`;
+  $('st-bbox').textContent = `габарит ${fmt(t.size.x)} × ${fmt(t.size.y)} × ${fmt(t.size.z)}`;
 }
 
 /* ------------------------------------------------------------------ клики по сцене */
@@ -251,9 +342,10 @@ function addMeasurePoint(hit) {
 }
 
 function renderMeasures() {
-  document.getElementById('m-count').textContent = state.measures.length;
-  const box = document.getElementById('measure-list');
+  $('m-count').textContent = state.measures.length;
+  const box = $('measure-list');
   box.innerHTML = '';
+  if (!state.measures.length) { box.innerHTML = '<div class="empty">пока пусто</div>'; return; }
   state.measures.forEach((m, i) => {
     const d = new THREE.Vector3(...m.a).distanceTo(new THREE.Vector3(...m.b));
     const dv = new THREE.Vector3(...m.b).sub(new THREE.Vector3(...m.a));
@@ -288,6 +380,13 @@ function rebuildMeasureLines() {
     }
   }
 }
+$('measures-clear').onclick = () => {
+  state.measures = [];
+  state.pending = null;
+  rebuildMeasureLines();
+  renderMeasures();
+  hint('замеры стёрты');
+};
 
 /* ------------------------------------------------------------------ замечания */
 const pinGroup = new THREE.Group();
@@ -312,9 +411,10 @@ function addPin(hit) {
 }
 
 function renderPins(focus = false, focusId = null) {
-  document.getElementById('p-count').textContent = state.pins.length;
-  const box = document.getElementById('pin-list');
+  $('p-count').textContent = state.pins.length;
+  const box = $('pin-list');
   box.innerHTML = '';
+  if (!state.pins.length) { box.innerHTML = '<div class="empty">пока пусто</div>'; return; }
   state.pins.forEach((p) => {
     const el = document.createElement('div');
     el.className = 'item';
@@ -344,6 +444,12 @@ function renderPins(focus = false, focusId = null) {
     if (focus && focusId === p.id) setTimeout(() => ta.focus(), 30);
   });
 }
+$('pins-clear').onclick = () => {
+  state.pins = [];
+  [...pinGroup.children].forEach((c) => { pinGroup.remove(c); c.geometry.dispose(); c.material.dispose(); });
+  renderPins();
+  hint('замечания стёрты');
+};
 
 /* ------------------------------------------------------------------ сравнение */
 const RAMP = [
@@ -363,8 +469,9 @@ function ramp(t) {
 }
 
 async function compareWithRef() {
-  if (!state.model || !state.ref) { hint('нужны обе сетки: моя и эталон'); return; }
+  if (!state.model || !state.ref) { hint('нужны обе сетки: моя и эталон'); activate('files'); return; }
   hint('считаю расстояния…');
+  $('st-dot').className = 'dot warn';
   const body = new URLSearchParams({ mine: state.model.path, ref: state.ref.path });
   const res = await fetch('/api/compare', { method: 'POST', body });
   const data = await res.json();
@@ -394,20 +501,26 @@ async function compareWithRef() {
   state.model.mesh.material.needsUpdate = true;
 
   const st = data.stats;
-  const box = document.getElementById('compare-box');
-  box.classList.remove('hidden');
-  document.getElementById('compare-stats').innerHTML =
-    `отклонение по вершинам, мм\nrms <b>${fmt(st.rms, 3)}</b>   среднее ${fmt(st.mean, 3)}\nмедиана ${fmt(st.median, 3)}   p95 ${fmt(st.p95, 3)}   max ${fmt(st.max, 3)}\n` +
+  state.compare = { rms: st.rms, mean: st.mean, p95: st.p95, max: st.max, n: data.n };
+  $('compare-box').classList.remove('hidden');
+  $('compare-empty').hidden = true;
+  $('compare-stats').innerHTML =
+    `отклонение по вершинам, мм\nrms <b>${fmt(st.rms, 3)}</b>   среднее ${fmt(st.mean, 3)}\n` +
+    `медиана ${fmt(st.median, 3)}   p95 ${fmt(st.p95, 3)}   max ${fmt(st.max, 3)}\n` +
     `знак средней ${fmt(st.signed_mean, 3)} мм (${st.signed_mean > 0 ? 'наружу' : 'внутрь'})\n` +
     `точек ${data.n} из ${data.mine_vertices}${data.subsampled ? ' (прорежено)' : ''}, ${data.seconds} с` +
     (data.align && data.align.done
-      ? `<div class="sub">позу совместил сам: было ${fmt(data.align.rms_before, 3)} мм</div>`
+      ? `<span class="sub">позу совместил сам: было ${fmt(data.align.rms_before, 3)} мм</span>`
       : data.align && data.align.error
-        ? `<div class="sub">без совмещения: ${data.align.error}</div>` : '');
-  const lm = document.getElementById('legend-max');
+        ? `<span class="sub">без совмещения: ${data.align.error}</span>` : '');
+  const lm = $('legend-max');
   lm.textContent = '>' + fmt(state.scaleMax, 2) + ' мм';
   lm.title = `шкала 0…${fmt(state.scaleMax, 2)} мм = p95×1.25; max по сетке ${fmt(st.max, 3)} мм — он и уходит в красный`;
+  $('st-rms').textContent = 'дифф ' + fmt(st.rms, 3) + ' мм';
+  $('st-dot').className = 'dot ok';
+  buildPill();
   hint('раскраска по отклонению от эталона');
+  activate('compare');
 }
 
 function clearCompare() {
@@ -416,7 +529,11 @@ function clearCompare() {
   state.model.mesh.material.vertexColors = false;
   state.model.mesh.material.color.copy(MODEL_COLOR);
   state.model.mesh.material.needsUpdate = true;
-  document.getElementById('compare-box').classList.add('hidden');
+  state.compare = null;
+  $('compare-box').classList.add('hidden');
+  $('compare-empty').hidden = false;
+  $('st-rms').textContent = 'дифф —';
+  hint('раскраска убрана');
 }
 
 /* ------------------------------------------------------------------ задача агенту */
@@ -447,57 +564,61 @@ async function saveTask() {
       comment: p.comment,
       camera: { pos: p.camera.pos.map((v) => +v.toFixed(2)), target: p.camera.target.map((v) => +v.toFixed(2)) } })),
     compare: state.compare,
-    note: document.getElementById('task-note').value,
+    note: $('task-note').value,
   };
   const res = await fetch('/api/task', { method: 'POST', body: JSON.stringify(payload) });
   const data = await res.json();
-  if (data.error) { document.getElementById('task-out').textContent = 'ошибка: ' + data.error; return; }
-  document.getElementById('task-out').innerHTML = `сохранено: <b>${data.rel}</b><br>скажи в чате: «посмотри задачу»`;
+  if (data.error) { $('task-out').textContent = 'ошибка: ' + data.error; hint('задача не сохранилась'); return; }
+  $('task-out').innerHTML = `сохранено: <b>${data.rel}</b><br>скажи в чате: «посмотри задачу»`;
   window.__lastTask = payload;
+  saved(true);
   hint('задача записана в файл');
 }
 
 /* ------------------------------------------------------------------ мелочи UI */
-function hint(text) { document.getElementById('hint').textContent = text; }
+function hint(text) { $('hint').textContent = text; }
 
 function setMode(mode) {
   state.mode = mode;
   for (const m of ['orbit', 'measure', 'pin']) {
-    document.getElementById('mode-' + m).classList.toggle('active', m === mode);
+    $('mode-' + m).classList.toggle('active', m === mode);
   }
-  controls.enableRotate = mode === 'orbit' || true;   // вращать можно всегда, клик ловим по сдвигу
+  controls.enableRotate = true;   // вращать можно всегда, клик ловим по сдвигу
   hint(mode === 'measure' ? 'клик — точка, второй клик — расстояние'
     : mode === 'pin' ? 'клик по месту, где надо поправить'
     : 'вращай: ЛКМ — поворот, колесо — зум, ПКМ/Shift — сдвиг');
 }
 
-document.getElementById('mode-orbit').onclick = () => setMode('orbit');
-document.getElementById('mode-measure').onclick = () => setMode('measure');
-document.getElementById('mode-pin').onclick = () => setMode('pin');
-document.querySelectorAll('.view').forEach((b) => { b.onclick = () => setView(b.dataset.view); });
-document.getElementById('btn-compare').onclick = compareWithRef;
-document.getElementById('btn-clear-compare').onclick = clearCompare;
-document.getElementById('btn-task').onclick = saveTask;
-document.getElementById('btn-copy').onclick = async () => {
+$('mode-orbit').onclick = () => setMode('orbit');
+$('mode-measure').onclick = () => setMode('measure');
+$('mode-pin').onclick = () => setMode('pin');
+$('btn-compare').onclick = compareWithRef;
+$('btn-clear-compare').onclick = clearCompare;
+$('btn-task').onclick = saveTask;
+$('btn-task-top').onclick = saveTask;
+$('btn-copy').onclick = async () => {
   if (!window.__lastTask) { hint('сначала сохрани задачу'); return; }
   await navigator.clipboard.writeText(JSON.stringify(window.__lastTask, null, 2));
   hint('JSON задачи в буфере обмена');
 };
-document.getElementById('chk-grid').onchange = (e) => { grid.visible = e.target.checked; };
-document.getElementById('chk-wire').onchange = (e) => {
+$('docname').onclick = () => activate('files');
+$('chk-grid').onchange = (e) => { grid.visible = e.target.checked; };
+$('chk-wire').onchange = (e) => {
   if (state.model) state.model.mesh.material.wireframe = e.target.checked;
 };
-document.getElementById('chk-ghost').onchange = (e) => {
+$('chk-axes').onchange = (e) => { axes.visible = e.target.checked; };
+$('chk-ghost').onchange = (e) => {
   if (!state.ref) return;
   const ghost = e.target.checked;
   state.ref.mesh.material.opacity = ghost ? 0.22 : 0.95;
   state.ref.mesh.material.depthWrite = !ghost;
   state.ref.mesh.material.needsUpdate = true;
 };
-document.getElementById('file-input').onchange = async (e) => {
+$('file-input').onchange = async (e) => {
   for (const f of e.target.files) await uploadAndLoad(f);
 };
-const drop = document.getElementById('dropzone');
+$('btn-open').onclick = () => $('file-input').click();
+const drop = $('dropzone');
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('hover'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('hover'));
 drop.addEventListener('drop', async (e) => {
@@ -510,18 +631,21 @@ async function uploadAndLoad(file) {
   const res = await fetch('/api/upload?name=' + encodeURIComponent(file.name),
     { method: 'POST', body: await file.arrayBuffer() });
   const data = await res.json();
+  if (data.error) { hint('не вышло: ' + data.error); return; }
   await loadFile(data.path, state.model ? 'ref' : 'model');
 }
 
 addEventListener('keydown', (e) => {
+  if (e.key === 's' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveTask(); return; }
   if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.key === '1') setMode('orbit');
-  if (e.key === '2') setMode('measure');
-  if (e.key === '3') setMode('pin');
+  if (e.key === '2') { setMode('measure'); activate('measure'); }
+  if (e.key === '3') { setMode('pin'); activate('notes'); }
   if (e.key === 'f' || e.key === 'F') fitCamera();
   if (e.key === 'Escape' && state.pending) {
     state.pending = null;
     measureGroup.children.filter((c) => c.userData.temp).forEach((c) => measureGroup.remove(c));
+    hint('точка отменена');
   }
 });
 
@@ -563,11 +687,13 @@ function updateLabels() {
 /* ------------------------------------------------------------------ цикл */
 function resize() {
   const r = stage.getBoundingClientRect();
+  if (!r.width || !r.height) return;
   renderer.setSize(r.width, r.height, false);
   camera.aspect = r.width / Math.max(r.height, 1);
   camera.updateProjectionMatrix();
 }
 addEventListener('resize', resize);
+new ResizeObserver(resize).observe(stage);
 
 function loop() {
   controls.update();
@@ -579,6 +705,10 @@ function loop() {
 resize();
 refreshFiles();
 setMode('orbit');
+renderMeasures();
+renderPins();
+buildPill();
+saved(false);
 
 /* ссылка вида ?model=path&ref=path&mode=measure — открыть сразу с сетками */
 const params = new URLSearchParams(location.search);
@@ -587,6 +717,7 @@ const params = new URLSearchParams(location.search);
   if (params.get('ref')) await loadFile(params.get('ref'), 'ref');
   if (params.get('mode')) setMode(params.get('mode'));
   if (params.get('compare') && state.model && state.ref) await compareWithRef();
+  else if (params.get('panel')) activate(params.get('panel'));
   if (params.get('selftest')) await selftest();
 })();
 
@@ -631,9 +762,9 @@ async function selftest() {
 
     if (state.model && state.ref) {
       await compareWithRef();
-      const cbox = document.getElementById('compare-box');
+      const cbox = $('compare-box');
       out.compareVisible = !cbox.classList.contains('hidden');
-      out.compareText = document.getElementById('compare-stats').textContent.replace(/\s+/g, ' ').slice(0, 120);
+      out.compareText = $('compare-stats').textContent.replace(/\s+/g, ' ').slice(0, 120);
       out.vertexColors = !!state.model.geo.attributes.color;
       if (!out.compareVisible) out.errors.push('сравнение не показалось');
       if (!out.vertexColors) out.errors.push('раскраска не появилась');
@@ -649,6 +780,12 @@ async function selftest() {
 
     out.labels = document.querySelectorAll('#labels .lbl').length;
     out.triangles = state.model ? state.model.geo.attributes.position.count / 3 : 0;
+    out.dom = {
+      rail: document.querySelectorAll('#rail button').length,
+      panels: document.querySelectorAll('.panel').length,
+      pill: $('build-state').textContent,
+      status: $('st-bbox').textContent,
+    };
   } catch (e) {
     out.errors.push('исключение: ' + e.message);
   }
