@@ -399,7 +399,11 @@ async function compareWithRef() {
   document.getElementById('compare-stats').innerHTML =
     `отклонение по вершинам, мм\nrms <b>${fmt(st.rms, 3)}</b>   среднее ${fmt(st.mean, 3)}\nмедиана ${fmt(st.median, 3)}   p95 ${fmt(st.p95, 3)}   max ${fmt(st.max, 3)}\n` +
     `знак средней ${fmt(st.signed_mean, 3)} мм (${st.signed_mean > 0 ? 'наружу' : 'внутрь'})\n` +
-    `точек ${data.n} из ${data.mine_vertices}${data.subsampled ? ' (прорежено)' : ''}, ${data.seconds} с`;
+    `точек ${data.n} из ${data.mine_vertices}${data.subsampled ? ' (прорежено)' : ''}, ${data.seconds} с` +
+    (data.align && data.align.done
+      ? `<div class="sub">позу совместил сам: было ${fmt(data.align.rms_before, 3)} мм</div>`
+      : data.align && data.align.error
+        ? `<div class="sub">без совмещения: ${data.align.error}</div>` : '');
   const lm = document.getElementById('legend-max');
   lm.textContent = '>' + fmt(state.scaleMax, 2) + ' мм';
   lm.title = `шкала 0…${fmt(state.scaleMax, 2)} мм = p95×1.25; max по сетке ${fmt(st.max, 3)} мм — он и уходит в красный`;

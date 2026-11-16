@@ -90,8 +90,15 @@ def list_meshes() -> list[dict]:
     return out
 
 
-def compare(mine_path: Path, ref_path: Path, max_points: int = 30000) -> dict:
-    """Знаковое расстояние вершин моей модели до поверхности эталона."""
+def compare(mine_path: Path, ref_path: Path, max_points: int = 30000, align: bool = True) -> dict:
+    """Знаковое расстояние вершин моей модели до поверхности эталона.
+
+    Поза совмещается автоматически (`rigid_align` из `scripts/fit_params.py`): эталон из
+    чужой библиотеки почти всегда лежит в других координатах, и без совмещения
+    «отклонение» получается 5.98 мм там, где формы отличаются на 0.1 — это не форма,
+    а поворот. Если поза уже верная, матрица близка к единичной и цифры не меняются.
+    """
+    import sys
     import numpy as np
     import trimesh
 
@@ -102,12 +109,30 @@ def compare(mine_path: Path, ref_path: Path, max_points: int = 30000) -> dict:
     if isinstance(ref, trimesh.Scene):
         ref = trimesh.util.concatenate(tuple(ref.dump()))
 
-    pts = np.asarray(mine.vertices, dtype=float)
-    if len(pts) > max_points:
-        idx = np.linspace(0, len(pts) - 1, max_points).astype(int)
-        pts = pts[idx]
+    verts = np.asarray(mine.vertices, dtype=float)
+    if len(verts) > max_points:
+        idx = np.linspace(0, len(verts) - 1, max_points).astype(int)
+        pts = verts[idx]
+    else:
+        pts = verts
 
     t0 = time.time()
+    align_info = {"done": False}
+    if align and len(mine.vertices) <= 400000:
+        scripts = str(REPO / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        try:
+            import fit_params as F
+
+            before = float(np.sqrt(np.mean(
+                np.abs(trimesh.proximity.ProximityQuery(ref).on_surface(pts)[1]) ** 2)))
+            M = F.rigid_align(mine, ref)                      # src -> dst, без масштаба
+            pts = pts @ M[:3, :3].T + M[:3, 3]
+            align_info = {"done": True, "rms_before": round(before, 3)}
+        except Exception as e:                             # noqa: BLE001 — сравнение важнее позы
+            align_info = {"done": False, "error": "%s: %s" % (type(e).__name__, e)}
+
     closest, dist, tri = trimesh.proximity.ProximityQuery(ref).on_surface(pts)
     normals = ref.face_normals[np.asarray(tri, dtype=int)]
     sign = np.sign(np.einsum("ij,ij->i", pts - closest, normals))
@@ -128,6 +153,7 @@ def compare(mine_path: Path, ref_path: Path, max_points: int = 30000) -> dict:
         "distances": base64.b64encode(signed.tobytes()).decode("ascii"),
         "mine_vertices": int(len(mine.vertices)),
         "subsampled": bool(len(mine.vertices) > max_points),
+        "align": align_info,
     }
 
 
