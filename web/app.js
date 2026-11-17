@@ -1120,7 +1120,7 @@ vcRenderer.setClearAlpha(0);
 vcHost.append(vcRenderer.domElement);
 
 const vcScene = new THREE.Scene();
-const vcCam = new THREE.OrthographicCamera(-2.3, 2.3, 2.3, -2.3, 0.1, 40);
+const vcCam = new THREE.OrthographicCamera(-1.42, 1.42, 1.42, -1.42, 0.1, 40);
 
 /* шесть граней: подпись словами + координата оси, как в CAD-кубиках */
 const VC_SIDES = [
@@ -1133,24 +1133,21 @@ const VC_SIDES = [
 ];
 const VC_AXIS_COLOR = { X: '#e2574c', Y: '#59b45f', Z: '#4f8fe0' };
 
-function vcFaceTexture(label, axis) {
+function vcFaceTexture(label) {
   const s = 256;
   const cv = document.createElement('canvas');
   cv.width = cv.height = s;
   const g = cv.getContext('2d');
-  g.fillStyle = '#232830';
+  g.fillStyle = '#262b33';
   g.fillRect(0, 0, s, s);
-  g.strokeStyle = 'rgba(140,150,165,.5)';
-  g.lineWidth = 4;
-  g.strokeRect(2, 2, s - 4, s - 4);
+  g.strokeStyle = 'rgba(150,158,172,.42)';     // светлая нитка по ребру, как в CAD-кубике
+  g.lineWidth = 3;
+  g.strokeRect(1.5, 1.5, s - 3, s - 3);
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillStyle = '#e6e8eb';
-  g.font = '700 54px "IBM Plex Sans", system-ui, sans-serif';
-  g.fillText(label, s / 2, s / 2 - 20);
-  g.fillStyle = VC_AXIS_COLOR[axis[1]] || '#a3acb6';
-  g.font = '600 38px PlexMono, monospace';
-  g.fillText(axis, s / 2, s / 2 + 44);
+  g.fillStyle = '#dfe3ea';
+  g.font = '700 58px "IBM Plex Sans", system-ui, sans-serif';
+  g.fillText(label, s / 2, s / 2 + 2);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
@@ -1160,7 +1157,7 @@ function vcFaceTexture(label, axis) {
 /* тёмная подложка: швы между плитками читаются как рёбра куба */
 const vcCore = new THREE.Mesh(
   new THREE.BoxGeometry(VC_S * 0.986, VC_S * 0.986, VC_S * 0.986),
-  new THREE.MeshBasicMaterial({ color: 0x191c21 }));
+  new THREE.MeshBasicMaterial({ color: 0x1d2127 }));
 vcCore.raycast = () => {};
 vcScene.add(vcCore);
 
@@ -1171,7 +1168,7 @@ for (const def of VC_SIDES) {
   const right = new THREE.Vector3().crossVectors(up, n).normalize();   // right × up = n
   const plane = new THREE.Mesh(
     new THREE.PlaneGeometry(VC_S, VC_S),
-    new THREE.MeshBasicMaterial({ map: vcFaceTexture(def.label, def.axis) }));
+    new THREE.MeshBasicMaterial({ map: vcFaceTexture(def.label) }));
   plane.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, n));
   plane.position.copy(n).multiplyScalar(VC_H);
   plane.userData = { kind: 'face', n: def.n, label: def.label };
@@ -1252,7 +1249,7 @@ const VC_AXES = [
   { v: [0, 1, 0], color: 0x59b45f, label: 'Y' },
   { v: [0, 0, 1], color: 0x4f8fe0, label: 'Z' },
 ];
-const VC_AX_LEN = 1.95;
+const VC_AX_LEN = 1.16;
 const vcAxisHits = [];
 function vcAxisLabel(text, color) {
   const s = 64;
@@ -1266,35 +1263,47 @@ function vcAxisLabel(text, color) {
   g.fillText(text, s / 2, s / 2 + 2);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true }));
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true }));
   sp.scale.set(0.34, 0.34, 1);
   return sp;
 }
 for (const a of VC_AXES) {
   const dir = new THREE.Vector3(a.v[0], a.v[1], a.v[2]);
   const mat = new THREE.MeshBasicMaterial({ color: a.color });
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, VC_AX_LEN - 0.2, 8), mat);
+  // тонкая нитка, как в CAD: без стрелки-конуса, буква на конце сама показывает направление
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.011, VC_AX_LEN, 8), mat);
   shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-  shaft.position.copy(dir).multiplyScalar((VC_AX_LEN - 0.2) / 2);
+  shaft.position.copy(dir).multiplyScalar(VC_AX_LEN / 2);
   shaft.userData = { kind: 'axis', n: a.v, label: a.label };
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.19, 10), mat);
-  head.quaternion.copy(shaft.quaternion);
-  head.position.copy(dir).multiplyScalar(VC_AX_LEN - 0.095);
-  head.userData = shaft.userData;
   const sp = vcAxisLabel(a.label, a.color);
-  sp.position.copy(dir).multiplyScalar(VC_AX_LEN + 0.17);
+  sp.position.copy(dir).multiplyScalar(VC_AX_LEN + 0.1);
+  sp.scale.set(0.24, 0.24, 1);
   sp.raycast = () => {};
-  vcScene.add(shaft, head, sp);
-  vcAxisHits.push(shaft, head);
+  vcScene.add(shaft, sp);
+  vcAxisHits.push(shaft);
 }
 
 const vcRay = new THREE.Raycaster();
 const vcPointer = new THREE.Vector2();
 
+/* камера сцены смотрит строго по оси — кубик от этого становится плоским квадратом.
+   Поэтому сам кубик отворачиваем на 11°: видна грань и две узкие полосы соседних, как в CAD. */
+const VC_TILT = THREE.MathUtils.degToRad(11);
+function vcTiltDir(dir) {
+  const ax = Math.abs(dir.x), ay = Math.abs(dir.y), az = Math.abs(dir.z);
+  if (Math.max(ax, ay, az) < 0.985) return dir;          // камера уже под углом
+  const up = az > 0.985 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+  const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+  return dir.clone()
+    .applyQuaternion(new THREE.Quaternion().setFromAxisAngle(up, -VC_TILT))
+    .applyQuaternion(new THREE.Quaternion().setFromAxisAngle(right, VC_TILT));
+}
+
 function vcSync() {
   const off = new THREE.Vector3().subVectors(camera.position, controls.target);
   if (off.lengthSq() < 1e-9) return;
-  off.normalize().multiplyScalar(6);
+  off.copy(vcTiltDir(off.normalize()));
+  off.multiplyScalar(6);
   vcCam.position.copy(off);
   // при взгляде вдоль Z (сверху/снизу) опорный «верх» надо менять, иначе кадр выворачивает
   vcCam.up.set(0, 0, 1);
@@ -1789,7 +1798,7 @@ async function selftest() {
     if (!out.viewcube) out.errors.push('видовой куб не отрисовался');
     vcSync();
     const vr = vcCanvas.getBoundingClientRect();
-    out.cubeCounts = { faces: vcFaces.length, edges: vcEdges.length, corners: vcCorners.length, axes: vcAxisHits.length / 2 };
+    out.cubeCounts = { faces: vcFaces.length, edges: vcEdges.length, corners: vcCorners.length, axes: vcAxisHits.length };
     if (out.cubeCounts.faces !== 6) out.errors.push('граней у куба не шесть');
     if (out.cubeCounts.edges !== 12) out.errors.push('рёбер у куба не двенадцать');
     if (out.cubeCounts.corners !== 8) out.errors.push('углов у куба не восемь');

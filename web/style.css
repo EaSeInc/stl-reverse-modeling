@@ -236,17 +236,16 @@ button { cursor: pointer; }
 .tool.exit:hover { color: var(--err); }
 
 #viewcube {
-  position: absolute; right: 12px; top: 10px; display: flex; flex-direction: column; gap: 4px;
-  align-items: center; padding: 4px; border-radius: 8px;
-  background: rgba(27,30,35,.86); border: 1px solid var(--line2);
+  position: absolute; right: 12px; top: 6px; display: flex; flex-direction: column; gap: 2px;
+  align-items: center; padding: 0; border-radius: 8px;
 }
 #vc-host { width: 128px; height: 128px; cursor: grab; }
 #vc-host:active { cursor: grabbing; }
 #vc-host canvas { display: block; width: 128px; height: 128px; }
 .vc-rail { display: flex; gap: 4px; width: 100%; }
 .vc-rail button {
-  flex: 1 1 0; height: 20px; border-radius: 4px; font-size: 10px; padding: 0;
-  background: var(--s3); border: 1px solid var(--line2); color: var(--tx3);
+  flex: 1 1 0; height: 19px; border-radius: 4px; font-size: 10px; padding: 0;
+  background: rgba(27,30,35,.72); border: 1px solid var(--line2); color: var(--tx3);
   font-family: PlexMono, monospace;
 }
 .vc-rail button:hover { background: var(--s4); color: var(--acc); }
