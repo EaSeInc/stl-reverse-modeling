@@ -240,9 +240,9 @@ button { cursor: pointer; }
   align-items: center; padding: 4px; border-radius: 8px;
   background: rgba(27,30,35,.86); border: 1px solid var(--line2);
 }
-#vc-host { width: 104px; height: 104px; cursor: grab; }
+#vc-host { width: 128px; height: 128px; cursor: grab; }
 #vc-host:active { cursor: grabbing; }
-#vc-host canvas { display: block; width: 104px; height: 104px; }
+#vc-host canvas { display: block; width: 128px; height: 128px; }
 .vc-rail { display: flex; gap: 4px; width: 100%; }
 .vc-rail button {
   flex: 1 1 0; height: 20px; border-radius: 4px; font-size: 10px; padding: 0;
@@ -250,7 +250,7 @@ button { cursor: pointer; }
   font-family: PlexMono, monospace;
 }
 .vc-rail button:hover { background: var(--s4); color: var(--acc); }
-.viewrail { position: absolute; right: 12px; top: 150px; display: flex; flex-direction: column; gap: 3px; }
+.viewrail { position: absolute; right: 12px; top: 176px; display: flex; flex-direction: column; gap: 3px; }
 .viewrail button {
   width: 26px; height: 26px; display: grid; place-items: center; border-radius: 5px;
   background: rgba(27,30,35,.92); border: 1px solid var(--line2); color: var(--tx3);

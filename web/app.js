@@ -276,8 +276,8 @@ function setView(kind) {
   if (!pos) return;
   // по грани — «телеобъектив»: перспектива почти не искажает, грань смотрит прямо
   const narrow = kind !== 'iso';
-  camera.fov = narrow ? 12 : 45;
-  const k = narrow ? 3.9 : 1;
+  camera.fov = narrow ? 8 : 45;
+  const k = narrow ? 8.2 : 1;
   const p2 = new THREE.Vector3(pos[0], pos[1], pos[2]).sub(c).multiplyScalar(k).add(c);
   camera.position.copy(p2);
   camera.near = Math.max(r / 400, 0.01);
@@ -285,7 +285,7 @@ function setView(kind) {
   camera.updateProjectionMatrix();
   controls.target.copy(c);
   controls.update();
-  if (vcBox) vcSync();
+  if (vcFaces.length) vcSync();
 }
 document.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => setView(b.dataset.view); });
 $('btn-fit').onclick = () => fitCamera();
@@ -1105,7 +1105,13 @@ function redo() {
 }
 
 /* ------------------------------------------------------------------ видовой куб */
-const VC = 104;
+/* Классический CAD-куб, как в Fusion/SolidWorks: шесть подписанных граней,
+   кликабельные рёбра и углы, рядом цветные оси X/Y/Z. Куб стоит на месте,
+   камера куба смотрит туда же, куда основная — видно, откуда смотришь. */
+const VC = 128;                       // сторона миникарты, px
+const VC_S = 1.5;                     // ребро куба в сцене кубика
+const VC_H = VC_S / 2;
+const VC_ACC = 0xf29a38;              // акцент приложения — им же подсветка
 const vcHost = $('vc-host');
 const vcRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 vcRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -1114,48 +1120,178 @@ vcRenderer.setClearAlpha(0);
 vcHost.append(vcRenderer.domElement);
 
 const vcScene = new THREE.Scene();
-const vcCam = new THREE.OrthographicCamera(-2.1, 2.1, 2.1, -2.1, 0.1, 40);
-vcScene.add(new THREE.AmbientLight(0xffffff, 2.6));
-const vcLight = new THREE.DirectionalLight(0xffffff, 1.2);
-vcLight.position.set(2, -3, 4);
-vcScene.add(vcLight);
+const vcCam = new THREE.OrthographicCamera(-2.3, 2.3, 2.3, -2.3, 0.1, 40);
 
-/* подпись грани — текстурой, чтобы куб читался без легенды */
-function faceTexture(text) {
-  const s = 192;
+/* шесть граней: подпись словами + координата оси, как в CAD-кубиках */
+const VC_SIDES = [
+  { label: 'RIGHT',  axis: '+X', n: [ 1, 0, 0], up: [0, 0, 1] },
+  { label: 'LEFT',   axis: '−X', n: [-1, 0, 0], up: [0, 0, 1] },
+  { label: 'BACK',   axis: '+Y', n: [ 0, 1, 0], up: [0, 0, 1] },
+  { label: 'FRONT',  axis: '−Y', n: [ 0,-1, 0], up: [0, 0, 1] },
+  { label: 'TOP',    axis: '+Z', n: [ 0, 0, 1], up: [0, 1, 0] },
+  { label: 'BOTTOM', axis: '−Z', n: [ 0, 0,-1], up: [0, 1, 0] },
+];
+const VC_AXIS_COLOR = { X: '#e2574c', Y: '#59b45f', Z: '#4f8fe0' };
+
+function vcFaceTexture(label, axis) {
+  const s = 256;
   const cv = document.createElement('canvas');
   cv.width = cv.height = s;
   const g = cv.getContext('2d');
-  g.fillStyle = 'rgba(35,40,48,.96)';
+  g.fillStyle = '#232830';
   g.fillRect(0, 0, s, s);
-  g.strokeStyle = 'rgba(140,150,165,.55)';
-  g.lineWidth = 3;
-  g.strokeRect(1.5, 1.5, s - 3, s - 3);
-  g.fillStyle = '#dfe6f2';
-  g.font = '700 84px "IBM Plex Sans", system-ui, sans-serif';
+  g.strokeStyle = 'rgba(140,150,165,.5)';
+  g.lineWidth = 4;
+  g.strokeRect(2, 2, s - 4, s - 4);
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillText(text, s / 2, s / 2);
+  g.fillStyle = '#e6e8eb';
+  g.font = '700 54px "IBM Plex Sans", system-ui, sans-serif';
+  g.fillText(label, s / 2, s / 2 - 20);
+  g.fillStyle = VC_AXIS_COLOR[axis[1]] || '#a3acb6';
+  g.font = '600 38px PlexMono, monospace';
+  g.fillText(axis, s / 2, s / 2 + 44);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
   return t;
 }
-const VC_FACES = ['+X', '−X', '+Y', '−Y', '+Z', '−Z'];  // порядок групп BoxGeometry
-const vcBox = new THREE.Mesh(
-  new THREE.BoxGeometry(1.6, 1.6, 1.6),
-  VC_FACES.map((t) => new THREE.MeshBasicMaterial({ map: faceTexture(t), transparent: false })));
-vcScene.add(vcBox);
-vcScene.add(new THREE.LineSegments(
-  new THREE.EdgesGeometry(vcBox.geometry),
-  new THREE.LineBasicMaterial({ color: 0x8f99a6, transparent: true, opacity: 0.55 })));
+
+/* тёмная подложка: швы между плитками читаются как рёбра куба */
+const vcCore = new THREE.Mesh(
+  new THREE.BoxGeometry(VC_S * 0.986, VC_S * 0.986, VC_S * 0.986),
+  new THREE.MeshBasicMaterial({ color: 0x191c21 }));
+vcCore.raycast = () => {};
+vcScene.add(vcCore);
+
+const vcFaces = [];
+for (const def of VC_SIDES) {
+  const n = new THREE.Vector3(def.n[0], def.n[1], def.n[2]);
+  const up = new THREE.Vector3(def.up[0], def.up[1], def.up[2]);
+  const right = new THREE.Vector3().crossVectors(up, n).normalize();   // right × up = n
+  const plane = new THREE.Mesh(
+    new THREE.PlaneGeometry(VC_S, VC_S),
+    new THREE.MeshBasicMaterial({ map: vcFaceTexture(def.label, def.axis) }));
+  plane.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, n));
+  plane.position.copy(n).multiplyScalar(VC_H);
+  plane.userData = { kind: 'face', n: def.n, label: def.label };
+  const hl = new THREE.Mesh(
+    new THREE.PlaneGeometry(VC_S * 0.99, VC_S * 0.99),
+    new THREE.MeshBasicMaterial({ color: VC_ACC, transparent: true, opacity: 0.52, depthWrite: false }));
+  hl.position.z = 0.005;
+  hl.visible = false;
+  hl.raycast = () => {};
+  plane.add(hl);
+  plane.userData.hl = hl;
+  vcScene.add(plane);
+  vcFaces.push(plane);
+}
+
+/* рёбра и углы: невидимые тела-мишени, нормаль = сумма нормалей смежных граней.
+   Клик по такой мишени даёт диагональный вид (по ребру) или изометрию (по углу). */
+function vcInvisible() {
+  return new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+}
+function vcHighlight(geo, radiusScale) {
+  const hl = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: VC_ACC }));
+  hl.visible = false;
+  hl.raycast = () => {};
+  return hl;
+}
+
+const vcEdges = [];
+const VC_EDGE_R = 0.085;
+for (let i = 0; i < 3; i++) {
+  for (let j = i + 1; j < 3; j++) {
+    const k = 3 - i - j;                       // вдоль этой оси тянется ребро
+    for (const si of [-1, 1]) {
+      for (const sj of [-1, 1]) {
+        const pos = [0, 0, 0];
+        pos[i] = si * VC_H;
+        pos[j] = sj * VC_H;
+        const axis = [0, 0, 0];
+        axis[k] = 1;
+        const n = [0, 0, 0];
+        n[i] = si;
+        n[j] = sj;
+        const hit = new THREE.Mesh(new THREE.CylinderGeometry(VC_EDGE_R, VC_EDGE_R, VC_S, 10), vcInvisible());
+        hit.position.set(pos[0], pos[1], pos[2]);
+        hit.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...axis));
+        hit.userData = { kind: 'edge', n, label: 'ребро' };
+        const hl = vcHighlight(new THREE.CylinderGeometry(VC_EDGE_R * 0.6, VC_EDGE_R * 0.6, VC_S, 10));
+        hl.position.copy(hit.position);
+        hl.quaternion.copy(hit.quaternion);
+        hit.userData.hl = hl;
+        vcScene.add(hit, hl);
+        vcEdges.push(hit);
+      }
+    }
+  }
+}
+
+const vcCorners = [];
+const VC_CORNER_R = 0.15;
+for (const sx of [-1, 1]) {
+  for (const sy of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const hit = new THREE.Mesh(new THREE.SphereGeometry(VC_CORNER_R, 12, 8), vcInvisible());
+      hit.position.set(sx * VC_H, sy * VC_H, sz * VC_H);
+      hit.userData = { kind: 'corner', n: [sx, sy, sz], label: 'угол' };
+      const hl = vcHighlight(new THREE.SphereGeometry(VC_CORNER_R * 0.78, 12, 8));
+      hl.position.copy(hit.position);
+      hit.userData.hl = hl;
+      vcScene.add(hit, hl);
+      vcCorners.push(hit);
+    }
+  }
+}
+
+/* оси мира: X красная, Y зелёная, Z синяя и вверх — торчат за куб, как в CAD */
+const VC_AXES = [
+  { v: [1, 0, 0], color: 0xe2574c, label: 'X' },
+  { v: [0, 1, 0], color: 0x59b45f, label: 'Y' },
+  { v: [0, 0, 1], color: 0x4f8fe0, label: 'Z' },
+];
+const VC_AX_LEN = 1.95;
+const vcAxisHits = [];
+function vcAxisLabel(text, color) {
+  const s = 64;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  g.font = '700 46px "IBM Plex Sans", system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, s / 2, s / 2 + 2);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true }));
+  sp.scale.set(0.34, 0.34, 1);
+  return sp;
+}
+for (const a of VC_AXES) {
+  const dir = new THREE.Vector3(a.v[0], a.v[1], a.v[2]);
+  const mat = new THREE.MeshBasicMaterial({ color: a.color });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, VC_AX_LEN - 0.2, 8), mat);
+  shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  shaft.position.copy(dir).multiplyScalar((VC_AX_LEN - 0.2) / 2);
+  shaft.userData = { kind: 'axis', n: a.v, label: a.label };
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.19, 10), mat);
+  head.quaternion.copy(shaft.quaternion);
+  head.position.copy(dir).multiplyScalar(VC_AX_LEN - 0.095);
+  head.userData = shaft.userData;
+  const sp = vcAxisLabel(a.label, a.color);
+  sp.position.copy(dir).multiplyScalar(VC_AX_LEN + 0.17);
+  sp.raycast = () => {};
+  vcScene.add(shaft, head, sp);
+  vcAxisHits.push(shaft, head);
+}
 
 const vcRay = new THREE.Raycaster();
 const vcPointer = new THREE.Vector2();
-const vcDown = { at: null, moved: 0 };
 
 function vcSync() {
-  // куб стоит на месте, камера куба повторяет направление основной — видно, куда смотришь
   const off = new THREE.Vector3().subVectors(camera.position, controls.target);
   if (off.lengthSq() < 1e-9) return;
   off.normalize().multiplyScalar(6);
@@ -1167,41 +1303,70 @@ function vcSync() {
   vcRenderer.render(vcScene, vcCam);
 }
 
-function lookFromNormal(n) {
+function lookFromNormal(n, straight) {
   const t = state.model || state.ref;
   if (!t) { hint('сначала открой STL'); return; }
-  const d = camera.position.distanceTo(controls.target) || Math.max(t.size.x, t.size.y, t.size.z) * 2.5;
+  const r = Math.max(t.size.x, t.size.y, t.size.z) * 2.1;
   const dir = new THREE.Vector3(n[0], n[1], n[2]).normalize();
+  // по грани — «телеобъектив» (перспектива почти не искажает); по ребру/углу — обычный обзор
+  const k = straight ? 8.2 : 1;
+  camera.fov = straight ? 8 : 45;
   camera.up.set(0, 0, 1);
   if (Math.abs(dir.z) > 0.985) camera.up.set(0, 1, 0);   // сверху/снизу — иначе камера кувыркается
-  camera.position.copy(t.center).add(dir.multiplyScalar(d));
+  camera.position.copy(t.center).add(dir.multiplyScalar(r * k));
+  camera.near = Math.max(r / 400, 0.01);
+  camera.far = r * 60 * k;
+  camera.updateProjectionMatrix();
   controls.target.copy(t.center);
   controls.update();
+  vcSync();
 }
 
-vcHost.addEventListener('pointerdown', (e) => {
-  vcDown.at = [e.clientX, e.clientY];
-  vcDown.moved = 0;
-});
-vcHost.addEventListener('pointermove', (e) => {
-  if (!vcDown.at) return;
-  vcDown.moved = Math.max(vcDown.moved, Math.hypot(e.clientX - vcDown.at[0], e.clientY - vcDown.at[1]));
-});
-vcHost.addEventListener('pointerup', (e) => {
-  const moved = vcDown.moved;
-  vcDown.at = null;
-  if (moved > 5) return;                                 // это было не нажатие грани
+/* что под курсором: сначала рёбра/углы/оси (они мельче и важнее), потом грань.
+   Видимость считаем по нормали: мишени с обратной стороны куба не должны ловить клик. */
+function vcPick(e) {
   const r = vcRenderer.domElement.getBoundingClientRect();
   vcPointer.x = ((e.clientX - r.left) / r.width) * 2 - 1;
   vcPointer.y = -((e.clientY - r.top) / r.height) * 2 + 1;
   vcRay.setFromCamera(vcPointer, vcCam);
-  const hit = vcRay.intersectObject(vcBox, false)[0];
-  if (!hit) return;
-  const n = hit.face.normal.clone();                     // куб не вращён: локальная нормаль = мировая
-  const name = VC_FACES[Math.floor(hit.faceIndex / 2)] || '';
-  lookFromNormal(n.toArray());
-  hint('вид: ' + name.toLowerCase());
+  const toCam = new THREE.Vector3().subVectors(vcCam.position, new THREE.Vector3()).normalize();
+  const facing = (n) => n[0] * toCam.x + n[1] * toCam.y + n[2] * toCam.z > 0.05;
+  const near = vcRay.intersectObjects([...vcCorners, ...vcEdges, ...vcAxisHits], false)
+    .filter((h) => facing(h.object.userData.n));
+  if (near.length) return near[0].object;
+  const fh = vcRay.intersectObjects(vcFaces, false);
+  return fh.length ? fh[0].object : null;
+}
+
+let vcHovered = null;
+function vcSetHover(obj) {
+  if (vcHovered === obj) return;
+  if (vcHovered && vcHovered.userData.hl) vcHovered.userData.hl.visible = false;
+  vcHovered = obj;
+  if (vcHovered && vcHovered.userData.hl) vcHovered.userData.hl.visible = true;
+  vcHost.style.cursor = obj ? 'pointer' : 'grab';
+  vcHost.title = obj
+    ? (obj.userData.kind === 'face' ? 'вид ' + obj.userData.label
+      : obj.userData.kind === 'axis' ? 'вид вдоль оси ' + obj.userData.label
+      : obj.userData.kind === 'edge' ? 'диагональ по ребру'
+      : 'изометрия из угла')
+    : 'щелкни по грани, ребру или углу';
+}
+
+vcHost.addEventListener('pointermove', (e) => vcSetHover(vcPick(e)));
+vcHost.addEventListener('pointerleave', () => vcSetHover(null));
+vcHost.addEventListener('pointerup', (e) => {
+  const obj = vcPick(e);
+  if (!obj) return;
+  const u = obj.userData;
+  lookFromNormal(u.n, u.kind === 'face');
+  if (u.kind === 'face') hint('вид: ' + u.label.toLowerCase());
+  else if (u.kind === 'axis') hint('вид вдоль оси ' + u.label);
+  else if (u.kind === 'edge') hint('вид по ребру — диагональ');
+  else hint('изометрия из угла');
+  vcSetHover(null);
 });
+
 $('btn-iso').onclick = () => setView('iso');
 
 function setViewCubeOnce() { vcSync(); }
@@ -1623,13 +1788,61 @@ async function selftest() {
     out.viewcube = !!vcCanvas && vcCanvas.width > 40;
     if (!out.viewcube) out.errors.push('видовой куб не отрисовался');
     vcSync();
-    const camBefore = camera.position.clone();
     const vr = vcCanvas.getBoundingClientRect();
-    const vx = vr.left + vr.width / 2, vy = vr.top + vr.height / 2;
-    vcHost.dispatchEvent(new PointerEvent('pointerdown', { clientX: vx, clientY: vy, bubbles: true, pointerId: 7 }));
-    vcHost.dispatchEvent(new PointerEvent('pointerup', { clientX: vx, clientY: vy, bubbles: true, pointerId: 7 }));
+    out.cubeCounts = { faces: vcFaces.length, edges: vcEdges.length, corners: vcCorners.length, axes: vcAxisHits.length / 2 };
+    if (out.cubeCounts.faces !== 6) out.errors.push('граней у куба не шесть');
+    if (out.cubeCounts.edges !== 12) out.errors.push('рёбер у куба не двенадцать');
+    if (out.cubeCounts.corners !== 8) out.errors.push('углов у куба не восемь');
+    if (out.cubeCounts.axes !== 3) out.errors.push('осей не три');
+
+    // экранная точка любой вершины кубика
+    const vcPoint = (v3) => {
+      const p = v3.clone().project(vcCam);
+      return { clientX: vr.left + (p.x + 1) / 2 * vr.width, clientY: vr.top + (1 - p.y) / 2 * vr.height };
+    };
+    const vcClick = (pt) => {
+      vcHost.dispatchEvent(new PointerEvent('pointermove', { clientX: pt.clientX, clientY: pt.clientY, bubbles: true, pointerId: 7 }));
+      vcHost.dispatchEvent(new PointerEvent('pointerup', { clientX: pt.clientX, clientY: pt.clientY, bubbles: true, pointerId: 7 }));
+    };
+    const vcToCam = vcCam.position.clone().normalize();
+    const faceBest = vcFaces.map((f) => ({ f, d: f.userData.n[0] * vcToCam.x + f.userData.n[1] * vcToCam.y + f.userData.n[2] * vcToCam.z }))
+      .sort((a, b) => b.d - a.d)[0].f;
+
+    // клик по грани → строго по нормали и теле-режим
+    const camBefore = camera.position.clone();
+    vcClick(vcPoint(new THREE.Vector3(...faceBest.userData.n).multiplyScalar(VC_H)));
     out.cubeSnap = +camBefore.distanceTo(camera.position).toFixed(2);
+    out.cubeFaceFov = camera.fov;
     if (out.cubeSnap < 0.01) out.errors.push('клик по грани куба не сменил вид');
+    if (camera.fov !== 8) out.errors.push('грань не включила теле-режим (' + camera.fov + ')');
+
+    // клик по углу → изометрия из этого угла
+    vcSync();
+    const cornerBest = vcCorners.map((c) => ({ c, d: c.userData.n[0] * vcToCam.x + c.userData.n[1] * vcToCam.y + c.userData.n[2] * vcToCam.z }))
+      .sort((a, b) => b.d - a.d)[0].c;
+    vcClick(vcPoint(cornerBest.position.clone().multiplyScalar(1.0)));
+    out.cubeCornerFov = camera.fov;
+    const cdir = [camera.position.x - controls.target.x, camera.position.y - controls.target.y, camera.position.z - controls.target.z];
+    out.cubeCornerDir = cdir.map((v) => Math.sign(v)).join(',');
+    out.cubeCornerWant = cornerBest.userData.n.map((v) => Math.sign(v)).join(',');
+    if (camera.fov !== 45) out.errors.push('угол не включил обзор (' + camera.fov + ')');
+    if (out.cubeCornerDir !== out.cubeCornerWant) out.errors.push('камера встала не в тот угол: ' + out.cubeCornerDir + ' вместо ' + out.cubeCornerWant);
+
+    // клик по ребру → диагональ, и подсветка загорается/гаснет
+    vcSync();
+    const toCam2 = vcCam.position.clone().normalize();
+    const edgeBest = vcEdges
+      .map((e) => ({ e, d: e.userData.n[0] * toCam2.x + e.userData.n[1] * toCam2.y + e.userData.n[2] * toCam2.z }))
+      .sort((a, b) => b.d - a.d)[0].e;
+    const ep = vcPoint(edgeBest.position.clone());
+    vcHost.dispatchEvent(new PointerEvent('pointermove', { clientX: ep.clientX, clientY: ep.clientY, bubbles: true, pointerId: 7 }));
+    out.cubeHover = edgeBest.userData.hl.visible;
+    if (!out.cubeHover) out.errors.push('подсветка ребра не загорается');
+    vcClick(ep);
+    out.cubeEdgeDir = [camera.position.x - controls.target.x, camera.position.y - controls.target.y, camera.position.z - controls.target.z].map((v) => Math.sign(v)).join(',');
+    out.cubeEdgeWant = edgeBest.userData.n.map((v) => Math.sign(v)).join(',');
+    if (out.cubeEdgeDir !== out.cubeEdgeWant) out.errors.push('клик по ребру встал не туда: ' + out.cubeEdgeDir);
+    if (!vcFaces.every((f) => !f.userData.hl.visible)) out.errors.push('подсветка не гаснет после клика');
 
     // ── п.2: разнесение ─────────────────────────────────────────
     setExplode(1);
@@ -1653,9 +1866,16 @@ async function selftest() {
         if (pick(st(gx, gy))) hit = { gx, gy };
     out.drawHit = !!hit;
     if (hit) {
-      strokeStart(st(hit.gx - 0.02, hit.gy));
-      strokePoint(st(hit.gx, hit.gy));
-      strokePoint(st(hit.gx + 0.02, hit.gy));
+      // идём от найденной точки, добавляя только те, что реально лежат на детали:
+      // на мелкой детали старт «на 2% левее» уводит луч мимо поверхности
+      const path = [{ gx: hit.gx, gy: hit.gy }];
+      for (let k = 1; k <= 3; k++) {
+        const c = { gx: hit.gx + 0.02 * k * 0.6, gy: hit.gy + 0.02 * k * 0.35 };
+        if (pick(st(c.gx, c.gy))) path.push(c);
+      }
+      out.strokePoints = path.length;
+      strokeStart(st(path[0].gx, path[0].gy));
+      for (let k = 1; k < path.length; k++) strokePoint(st(path[k].gx, path[k].gy));
       strokeEnd();
     }
     out.strokes = state.strokes.length;
@@ -1666,6 +1886,8 @@ async function selftest() {
     setMode('orbit');
 
     // ── п.5: авто-разбор и слои ────────────────────────────────
+    // разбор идёт по сети и может занять секунды (первый вызов грузит trimesh)
+    for (let i = 0; i < 60 && state.model && !state.analyze; i++) await new Promise((r) => setTimeout(r, 250));
     out.analyze = state.analyze ? { tris: state.analyze.triangles, bodies: state.analyze.bodies, sec: state.analyze.seconds } : null;
     if (state.model && !state.analyze) out.errors.push('авто-разбор не пришёл');
     out.analyzeText = $('analyze-out').textContent.replace(/\s+/g, ' ').slice(0, 80);
@@ -1704,6 +1926,6 @@ loop();
 
 // отладка из консоли: window.__dbg.state.model.mesh и т.п.
 window.__dbg = { THREE, renderer, camera, scene, controls, gizmo, clip, clipPlanes, state, applyClip,
-  setGizmoMode, updateLabels, explode, setExplode, setExplodeAxis, splitBodies, strokeGroup, vcRenderer, vcSync,
+  setGizmoMode, updateLabels, explode, setExplode, setExplodeAxis, splitBodies, strokeGroup, vcRenderer, vcSync, vcPick, vcFaces, vcEdges, vcCorners, vcCam, lookFromNormal,
   loadTask, refreshTasks, saveTask, analyze, selftest,
   setMode, setView, pick, screenBox, hint, activate, strokeStart, strokePoint, strokeEnd };
